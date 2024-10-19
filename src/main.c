@@ -1,10 +1,17 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <toml.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <stdarg.h>
+#include <sched.h>
 #include <setjmp.h>
+#include <sys/wait.h>
+#include <sys/mount.h>
 #include "ll.h"
+
+#define NETNS_MOUNT_DIR "/var/run/netns"
 
 #define MAX_HOST_NAME 256
 #define MAX_HOST_NAME_STR "256"
@@ -263,20 +270,63 @@ tn_db_t tn_parse(const char *file_path) {
     return parser.db;
 }
 
+int touch(const char *path)
+{
+    FILE *file = fopen(path, "w+");
+    if(!file) {
+        return 0;
+    }
+    fclose(file);
+    return 1;
+}
+
+void tn_create_host(tn_host_t *host)
+{
+    int pid = fork();
+    if(!pid) {
+        if(unshare(CLONE_NEWNET) == -1) {
+            exit(1);
+        }
+        int mypid = getpid();
+        char target_path[256];
+        char source_path[256];
+        snprintf(source_path, sizeof(source_path), "/proc/%d/ns/net", mypid);
+        snprintf(target_path, sizeof(target_path), NETNS_MOUNT_DIR "/%s", host->name);
+        if(!touch(target_path) || mount(source_path, target_path, "proc", MS_BIND | MS_SHARED, NULL) == -1) {
+            exit(1);
+        }
+        exit(0);
+    } else {
+        int st;
+        waitpid(pid, &st, 0);
+        if (WEXITSTATUS(st)) {
+            fprintf(stderr, "FATAL: failed to create namespace\n");
+            exit(1);
+        }
+    }
+}
+
+void tn_create_intf(tn_intf_t *intf)
+{
+}
+
 int main(int argc, char **argv)
 {
     tn_db_t db = tn_parse(argv[1]);
+    if(!db.is_valid) {
+        return 1;
+    }
     tn_host_t *host;
     tn_intf_t *intf;
     size_t _i, _j;
     ll_foreach(db.hosts_ll, host, _j) {
+        tn_create_host(host);
         printf("host: %s\n", host->name);
         ll_foreach(host->intfs_ll, intf, _i) {
-            printf("if: %s\n", intf->name);
-            if(intf->link)
-            printf("\t-> %s.%s\n", intf->link->host->name, intf->link->name);
+        //     printf("if: %s\n", intf->name);
+        //     if(intf->link)
+        //         printf("\t-> %s.%s\n", intf->link->host->name, intf->link->name);
         }
     }
-            
     return !db.is_valid;
 }
