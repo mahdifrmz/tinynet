@@ -3,6 +3,7 @@
         "*.ejs": "html",
         "stdarg.h": "c",
         "sched.h": "c",
-        "mount.h": "c"
-    }
+        "mount.h": "c",
+        "netlink.h": "c"
+    },
 }

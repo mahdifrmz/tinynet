@@ -9,6 +9,10 @@
 #include <setjmp.h>
 #include <sys/wait.h>
 #include <sys/mount.h>
+#include <netlink/netlink.h>
+#include <netlink/route/rtnl.h>
+#include <netlink/route/link.h>
+#include <netlink/route/link/veth.h>
 #include "ll.h"
 
 #define NETNS_MOUNT_DIR "/var/run/netns"
@@ -24,6 +28,7 @@ typedef struct tn_host_t tn_host_t;
 struct tn_intf_t {
     char *name;
     int is_valid;
+    int is_added;
     tn_host_t *host;
     tn_intf_t *created_for;
     tn_intf_t *link;
@@ -39,6 +44,7 @@ struct tn_host_t {
     tn_intf_t *intfs_ll;
     tn_host_t *ll_next;
     tn_host_t *ll_prev;
+    int ns_pid;
 };
 
 typedef struct {
@@ -90,6 +96,7 @@ tn_host_t *tn_add_host(tn_db_t *db, const char *name) {
         host->intfs_ll = NULL;
         host->created_for = NULL;
         host->is_valid = !lookup && name[0];
+        host->ns_pid = -1;
         ll_bpush(db->hosts_ll, host);
     } else {
         host = lookup;
@@ -109,6 +116,7 @@ tn_intf_t *tn_add_intf(tn_db_t *db, tn_host_t* host, const char *name) {
         intf->created_for = NULL;
         intf->is_valid = !lookup && name[0];
         intf->link = NULL;
+        intf->is_added = 0;
         ll_bpush(host->intfs_ll, intf);
     } else {
         db->pre_peered_count--;
@@ -127,6 +135,7 @@ void tn_db_link(tn_db_t *db, tn_intf_t *intf, const char *peer_name, const char 
         peer->intfs_ll = NULL;
         peer->created_for = intf;
         peer->is_valid = 1;
+        peer->ns_pid = -1;
         ll_bpush(db->hosts_ll, peer);
         db->pre_peered_count++;
     }
@@ -137,12 +146,20 @@ void tn_db_link(tn_db_t *db, tn_intf_t *intf, const char *peer_name, const char 
         peer_intf->host = peer;
         peer_intf->link = intf;
         peer_intf->created_for = intf;
+        peer_intf->is_added = 0;
         peer_intf->is_valid = 1;
         ll_bpush(peer->intfs_ll, peer_intf);
         db->pre_peered_count++;
     }
     intf->link = peer_intf;
     peer_intf->link = intf;
+}
+
+FILE *tn_host_ns_file(tn_host_t *host)
+{
+    char buf[256];
+    snprintf(buf,sizeof(buf), NETNS_MOUNT_DIR "/%s", host->name);
+    return fopen(buf,"r");
 }
 
 void tn_parse_error(tn_parser_t *parser, const char *fmt, ...) {
@@ -302,12 +319,61 @@ void tn_create_host(tn_host_t *host)
         if (WEXITSTATUS(st)) {
             fprintf(stderr, "FATAL: failed to create namespace\n");
             exit(1);
+        } else {
+            host->ns_pid = pid;
         }
     }
 }
 
-void tn_create_intf(tn_intf_t *intf)
+void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
 {
+    struct rtnl_link *dev, *pdev;
+    FILE *nsfile, *pnsfile;
+    tn_intf_t *peer;
+    if(intf->is_added) {
+        return;
+    }
+    if(intf->link) {
+        peer = intf->link;
+        intf->is_added = 1;
+        peer->is_added = 1;
+        dev = rtnl_link_veth_alloc();
+        pdev = rtnl_link_veth_get_peer(dev);
+        // set name
+        rtnl_link_set_name(dev, intf->name);
+        rtnl_link_set_name(pdev, peer->name);
+        // set netns
+        nsfile = tn_host_ns_file(intf->host);
+        pnsfile = tn_host_ns_file(peer->host);
+        rtnl_link_set_ns_fd(dev, fileno(nsfile));
+        rtnl_link_set_ns_fd(pdev, fileno(pnsfile));
+        // send req
+        if (rtnl_link_add(nlsock, dev, NLM_F_CREATE)) {
+            printf("can't create interface");
+            exit(1);
+        }
+        // clean up
+        rtnl_link_veth_release(dev);
+        fclose(nsfile);
+        fclose(pnsfile);
+    } else {
+        intf->is_added = 1;
+        dev = rtnl_link_alloc();
+        // set name & type
+        rtnl_link_set_name(dev, intf->name);
+        rtnl_link_set_type(dev, "dummy");
+        // set netns
+        nsfile = tn_host_ns_file(intf->host);
+        rtnl_link_set_ns_fd(dev, fileno(nsfile));
+        // send req
+        if (rtnl_link_add(nlsock, dev, NLM_F_CREATE)) {
+            printf("can't create interface");
+            exit(1);
+        }
+        // clean up
+        rtnl_link_put(dev);
+        fclose(nsfile);
+    }
 }
 
 int main(int argc, char **argv)
@@ -321,12 +387,18 @@ int main(int argc, char **argv)
     size_t _i, _j;
     ll_foreach(db.hosts_ll, host, _j) {
         tn_create_host(host);
-        printf("host: %s\n", host->name);
+    }
+    struct nl_sock *nlsock = nl_socket_alloc();
+    if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
+        printf("can't create rt_netlink socket\n");
+        return 1;
+    }
+    ll_foreach(db.hosts_ll, host, _j) {
         ll_foreach(host->intfs_ll, intf, _i) {
-        //     printf("if: %s\n", intf->name);
-        //     if(intf->link)
-        //         printf("\t-> %s.%s\n", intf->link->host->name, intf->link->name);
+            tn_create_intf(intf, nlsock);
         }
     }
+    nl_close(nlsock);
+    nl_socket_free(nlsock);
     return !db.is_valid;
 }
