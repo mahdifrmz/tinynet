@@ -14,6 +14,8 @@ peer-if='eth3'
 name='h2'
 [[host.if]]
 name='eth2'
+[[host.if]]
+name='eth4'
 
 
 [[host]]
