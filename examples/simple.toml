@@ -4,21 +4,26 @@ name='h1'
 name='eth0'
 peer='h2'
 peer-if='eth2'
+ip='10.0.0.10/24'
 [[host.if]]
 name='eth1'
 peer='h3'
 peer-if='eth3'
+ip='10.0.1.11/24'
 
 
 [[host]]
 name='h2'
 [[host.if]]
 name='eth2'
+ip='10.0.0.12/24'
 [[host.if]]
 name='eth4'
+ip='10.0.4.14/24'
 
 
 [[host]]
 name='h3'
 [[host.if]]
 name='eth3'
+ip='10.0.1.13/24'

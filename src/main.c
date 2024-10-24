@@ -13,6 +13,7 @@
 #include <netlink/netlink.h>
 #include <netlink/route/rtnl.h>
 #include <netlink/route/link.h>
+#include <netlink/route/addr.h>
 #include <netlink/route/link/veth.h>
 #include "ll.h"
 
@@ -35,6 +36,7 @@ struct tn_intf_t {
     tn_intf_t *link;
     tn_intf_t *ll_prev;
     tn_intf_t *ll_next;
+    struct nl_addr *ip;
 };
 
 struct tn_host_t {
@@ -114,6 +116,7 @@ tn_intf_t *tn_add_intf(tn_db_t *db, tn_host_t* host, const char *name) {
         intf->host = host;
         intf->created_for = NULL;
         intf->is_valid = !lookup && name[0];
+        intf->ip = NULL;
         intf->link = NULL;
         intf->is_added = 0;
         ll_bpush(host->intfs_ll, intf);
@@ -143,6 +146,7 @@ void tn_db_link(tn_db_t *db, tn_intf_t *intf, const char *peer_name, const char 
         peer_intf->name = strdup(peer_intf_name);
         peer_intf->host = peer;
         peer_intf->link = intf;
+        peer_intf->ip = NULL;
         peer_intf->created_for = intf;
         peer_intf->is_added = 0;
         peer_intf->is_valid = 1;
@@ -168,8 +172,19 @@ void tn_parse_error(tn_parser_t *parser, const char *fmt, ...) {
     fprintf(stderr, "\n");
     parser->db.is_valid = 0;
 }
-
+struct tn_intf_t *tn_lookup_intf_ip(tn_host_t *host, struct nl_addr *addr)
+{
+    tn_intf_t *intf;
+    size_t _i;
+    ll_foreach(host->intfs_ll, intf, _i) {
+        if(intf->ip && nl_addr_cmp(intf->ip, addr) == 0) {
+            return intf;
+        }
+    }
+    return NULL;
+}
 void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
+    int err;
     toml_datum_t name = toml_string_in(tintf, "name");
     if(!name.ok || !name.u.s[0]) {
         tn_parse_error(parser, "Interface must have a name");
@@ -177,6 +192,17 @@ void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
     tn_intf_t *intf = tn_add_intf(&parser->db, parser->cur_host, name.ok ? name.u.s : "");
     if(!intf->is_valid) {
         tn_parse_error(parser, "Interface name must be unique");
+    }
+    toml_datum_t ip = toml_string_in(tintf, "ip");
+    if(ip.ok) {
+        struct nl_addr *addr;
+        if ((err = nl_addr_parse(ip.u.s, AF_INET, &addr)) < 0) {
+            tn_parse_error(parser, "Invalid IP format");
+        } else if (tn_lookup_intf_ip(parser->cur_host, addr)) {
+            tn_parse_error(parser, "IP already set on another interface");
+        } else {
+            intf->ip = addr;
+        }
     }
     toml_datum_t link = toml_string_in(tintf, "peer");
     if(link.ok && link.u.s[0]) {
@@ -371,7 +397,7 @@ void tn_up_hosts(tn_host_t *host)
         struct nl_cache *cache;
         struct nl_sock *nlsock = nl_socket_alloc();
         if(( err = nl_connect(nlsock,NETLINK_ROUTE)) < 0) {
-            fprintf(stderr, "can't create rt_netlink socket : %s\n", nl_geterror(err));
+            fprintf(stderr, "Can't create rt_netlink socket : %s\n", nl_geterror(err));
             exit(1);
         }
         if((err = rtnl_link_alloc_cache(nlsock, AF_UNSPEC, &cache)) < 0) {
@@ -385,6 +411,20 @@ void tn_up_hosts(tn_host_t *host)
             if ((err = rtnl_link_change(nlsock, link, change, 0)) < 0) {
                 fprintf(stderr, "Failed to up interface '%s' : %s\n", rtnl_link_get_name(link), nl_geterror(err));
                 exit(1);
+            }
+            if(rtnl_link_get_type(link)) {
+                const char *name = rtnl_link_get_name(link);
+                tn_intf_t *intf = tn_lookup_intf(host, name);
+                if(intf->ip) {
+                    struct rtnl_addr *rt_addr = rtnl_addr_alloc();
+                    rtnl_addr_set_local(rt_addr, intf->ip);
+                    rtnl_addr_set_prefixlen(rt_addr, nl_addr_get_prefixlen(intf->ip));
+                    rtnl_addr_set_ifindex(rt_addr, rtnl_link_get_ifindex(link));
+                    if((err = rtnl_addr_add(nlsock, rt_addr, NLM_F_CREATE)) < 0) {
+                        fprintf(stderr, "Failed to set ip on interface '%s' : %s\n", name, nl_geterror(err));
+                        exit(1);
+                    }
+                }
             }
             link = (struct rtnl_link *) nl_cache_get_next((struct nl_object *)link);
         }
