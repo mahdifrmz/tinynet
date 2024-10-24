@@ -175,6 +175,9 @@ void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
         tn_parse_error(parser, "Interface must have a name");
     }
     tn_intf_t *intf = tn_add_intf(&parser->db, parser->cur_host, name.ok ? name.u.s : "");
+    if(!intf->is_valid) {
+        tn_parse_error(parser, "Interface name must be unique");
+    }
     toml_datum_t link = toml_string_in(tintf, "peer");
     if(link.ok && link.u.s[0]) {
         toml_datum_t link_if = toml_string_in(tintf, "peer-if");
