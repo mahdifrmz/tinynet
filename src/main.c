@@ -9,6 +9,7 @@
 #include <setjmp.h>
 #include <sys/wait.h>
 #include <sys/mount.h>
+#include <net/if.h>
 #include <netlink/netlink.h>
 #include <netlink/route/rtnl.h>
 #include <netlink/route/link.h>
@@ -44,7 +45,6 @@ struct tn_host_t {
     tn_intf_t *intfs_ll;
     tn_host_t *ll_next;
     tn_host_t *ll_prev;
-    int ns_pid;
 };
 
 typedef struct {
@@ -96,7 +96,6 @@ tn_host_t *tn_add_host(tn_db_t *db, const char *name) {
         host->intfs_ll = NULL;
         host->created_for = NULL;
         host->is_valid = !lookup && name[0];
-        host->ns_pid = -1;
         ll_bpush(db->hosts_ll, host);
     } else {
         host = lookup;
@@ -135,7 +134,6 @@ void tn_db_link(tn_db_t *db, tn_intf_t *intf, const char *peer_name, const char 
         peer->intfs_ll = NULL;
         peer->created_for = intf;
         peer->is_valid = 1;
-        peer->ns_pid = -1;
         ll_bpush(db->hosts_ll, peer);
         db->pre_peered_count++;
     }
@@ -301,32 +299,109 @@ void tn_create_host(tn_host_t *host)
 {
     int pid = fork();
     if(!pid) {
+        int err;
+        // create new netns
         if(unshare(CLONE_NEWNET) == -1) {
+            perror("FATAL: failed to create netns");
             exit(1);
         }
+        // bind mount the netns
         int mypid = getpid();
         char target_path[256];
         char source_path[256];
         snprintf(source_path, sizeof(source_path), "/proc/%d/ns/net", mypid);
         snprintf(target_path, sizeof(target_path), NETNS_MOUNT_DIR "/%s", host->name);
         if(!touch(target_path) || mount(source_path, target_path, "proc", MS_BIND | MS_SHARED, NULL) == -1) {
+            perror("FATAL: failed to mount netns");
             exit(1);
         }
+        // open netlink
+        struct nl_sock *nlsock = nl_socket_alloc();
+        if((err = nl_connect(nlsock,NETLINK_ROUTE)) < 0) {
+            fprintf(stderr, "can't create rt_netlink socket: %s\n", nl_geterror(err));
+            exit(1);
+        }
+        // up the loopback interface
+        struct rtnl_link *lo;
+        struct rtnl_link *change = rtnl_link_alloc();
+        if((err = rtnl_link_get_kernel(nlsock, 0, "lo", &lo)) < 0) {
+            fprintf(stderr, "FATAL: failed to fetch link: %s\n", nl_geterror(err));
+            exit(1);
+        }
+        rtnl_link_set_flags(change, IFF_UP);
+        if((err = rtnl_link_change(nlsock, lo, change, 0)) < 0) {
+            fprintf(stderr, "FATAL: failed to up link: %s\n", nl_geterror(err));
+            exit(1);
+        }
+        // clean up        
+        rtnl_link_put(lo);
+        nl_close(nlsock);
+        nl_socket_free(nlsock);
+
         exit(0);
     } else {
         int st;
         waitpid(pid, &st, 0);
         if (WEXITSTATUS(st)) {
-            fprintf(stderr, "FATAL: failed to create namespace\n");
             exit(1);
-        } else {
-            host->ns_pid = pid;
+        }
+    }
+}
+
+void tn_up_hosts(tn_host_t *host)
+{
+    FILE *nsfile;
+    int err;
+    int pid = fork();
+    if(!pid) {
+        nsfile = tn_host_ns_file(host);
+        if(!nsfile) {
+            perror("Failed to attach to namespace");
+            exit(1);
+        }
+        if (setns(fileno(nsfile), CLONE_NEWNET) == -1) {
+            perror("Failed to attach to namespace");
+            exit(1);
+        }
+        fclose(nsfile);
+        
+        struct nl_cache *cache;
+        struct nl_sock *nlsock = nl_socket_alloc();
+        if(( err = nl_connect(nlsock,NETLINK_ROUTE)) < 0) {
+            fprintf(stderr, "can't create rt_netlink socket : %s\n", nl_geterror(err));
+            exit(1);
+        }
+        if((err = rtnl_link_alloc_cache(nlsock, AF_UNSPEC, &cache)) < 0) {
+            fprintf(stderr, "Failed to get link info : %s\n", nl_geterror(err));
+            exit(1);
+        }
+        struct rtnl_link *change = rtnl_link_alloc();
+        rtnl_link_set_flags(change, IFF_UP);
+        struct rtnl_link *link = (struct rtnl_link *) nl_cache_get_first(cache);
+        while(link) {
+            if ((err = rtnl_link_change(nlsock, link, change, 0)) < 0) {
+                fprintf(stderr, "Failed to up interface '%s' : %s\n", rtnl_link_get_name(link), nl_geterror(err));
+                exit(1);
+            }
+            link = (struct rtnl_link *) nl_cache_get_next((struct nl_object *)link);
+        }
+        nl_close(nlsock);
+        nl_socket_free(nlsock);
+        rtnl_link_put(change);
+        nl_cache_free(cache);
+        exit(0);
+    } else {
+        int st;
+        waitpid(pid, &st, 0);
+        if (WEXITSTATUS(st)) {
+            exit(1);
         }
     }
 }
 
 void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
 {
+    int err;
     struct rtnl_link *dev, *pdev;
     FILE *nsfile, *pnsfile;
     tn_intf_t *peer;
@@ -339,7 +414,7 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
         peer->is_added = 1;
         dev = rtnl_link_veth_alloc();
         pdev = rtnl_link_veth_get_peer(dev);
-        // set name
+        // set attribs
         rtnl_link_set_name(dev, intf->name);
         rtnl_link_set_name(pdev, peer->name);
         // set netns
@@ -348,8 +423,8 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
         rtnl_link_set_ns_fd(dev, fileno(nsfile));
         rtnl_link_set_ns_fd(pdev, fileno(pnsfile));
         // send req
-        if (rtnl_link_add(nlsock, dev, NLM_F_CREATE)) {
-            printf("can't create interface");
+        if ((err = rtnl_link_add(nlsock, dev, NLM_F_CREATE)) < 0) {
+            fprintf(stderr, "can't create interface: %s\n", nl_geterror(err));
             exit(1);
         }
         // clean up
@@ -359,7 +434,7 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
     } else {
         intf->is_added = 1;
         dev = rtnl_link_alloc();
-        // set name & type
+        // set attribs
         rtnl_link_set_name(dev, intf->name);
         rtnl_link_set_type(dev, "dummy");
         // set netns
@@ -378,25 +453,29 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
 
 int main(int argc, char **argv)
 {
+    tn_host_t *host;
+    tn_intf_t *intf;
+    size_t _i, _j;
+    struct nl_sock *nlsock;
     tn_db_t db = tn_parse(argv[1]);
     if(!db.is_valid) {
         return 1;
     }
-    tn_host_t *host;
-    tn_intf_t *intf;
-    size_t _i, _j;
-    ll_foreach(db.hosts_ll, host, _j) {
-        tn_create_host(host);
-    }
-    struct nl_sock *nlsock = nl_socket_alloc();
+    nlsock = nl_socket_alloc();
     if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
         printf("can't create rt_netlink socket\n");
         return 1;
     }
     ll_foreach(db.hosts_ll, host, _j) {
+        tn_create_host(host);
+    }
+    ll_foreach(db.hosts_ll, host, _j) {
         ll_foreach(host->intfs_ll, intf, _i) {
             tn_create_intf(intf, nlsock);
         }
+    }
+    ll_foreach(db.hosts_ll, host, _j) {
+        tn_up_hosts(host);
     }
     nl_close(nlsock);
     nl_socket_free(nlsock);
