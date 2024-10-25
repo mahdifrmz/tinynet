@@ -1,11 +1,17 @@
 #!/bin/bash
-if [[ ! -d /var/run/netns ]]
+if [[ ! -d /run/tomnet/sim ]]
 then
     exit 1
 fi
-cd /var/run/netns
-for f in $(ls)
+cd /run/tomnet/sim
+for dir in $(ls)
 do
-    umount $f
-    rm $f
+    cd $dir/hosts
+    for f in $(ls)
+    do
+        umount $f
+        rm $f
+    done
+    cd ../..
+    rm -rf $dir
 done

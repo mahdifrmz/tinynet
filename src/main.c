@@ -9,7 +9,10 @@
 #include <setjmp.h>
 #include <sys/wait.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <net/if.h>
+#include <errno.h>
 #include <netlink/netlink.h>
 #include <netlink/route/rtnl.h>
 #include <netlink/route/link.h>
@@ -17,7 +20,8 @@
 #include <netlink/route/link/veth.h>
 #include "ll.h"
 
-#define NETNS_MOUNT_DIR "/var/run/netns"
+#define NETNS_MOUNT_DIR "/run/tomnet/sim"
+#define LOCKFILE_PATH "/run/tomnet/lock"
 
 #define MAX_HOST_NAME 256
 #define MAX_HOST_NAME_STR "256"
@@ -26,6 +30,7 @@
 
 typedef struct tn_intf_t tn_intf_t;
 typedef struct tn_host_t tn_host_t;
+typedef struct tn_db_t tn_db_t;
 
 struct tn_intf_t {
     char *name;
@@ -43,20 +48,22 @@ struct tn_host_t {
     char *name;
     int is_switch;
     int is_valid;
+    tn_db_t *db;
     tn_intf_t *created_for;
     tn_intf_t *intfs_ll;
     tn_host_t *ll_next;
     tn_host_t *ll_prev;
 };
 
-typedef struct {
+struct tn_db_t {
     int pre_peered_count;
     int is_valid;
     tn_host_t *hosts_ll;
-} tn_db_t;
+    uint32_t checksum;
+};
 
 typedef struct {
-    tn_db_t db;
+    tn_db_t *db;
     tn_host_t *cur_host;
 } tn_parser_t;
 
@@ -98,6 +105,7 @@ tn_host_t *tn_add_host(tn_db_t *db, const char *name) {
         host->intfs_ll = NULL;
         host->created_for = NULL;
         host->is_valid = !lookup && name[0];
+        host->db = db;
         ll_bpush(db->hosts_ll, host);
     } else {
         host = lookup;
@@ -137,6 +145,7 @@ void tn_db_link(tn_db_t *db, tn_intf_t *intf, const char *peer_name, const char 
         peer->intfs_ll = NULL;
         peer->created_for = intf;
         peer->is_valid = 1;
+        peer->db = db;
         ll_bpush(db->hosts_ll, peer);
         db->pre_peered_count++;
     }
@@ -160,7 +169,7 @@ void tn_db_link(tn_db_t *db, tn_intf_t *intf, const char *peer_name, const char 
 FILE *tn_host_ns_file(tn_host_t *host)
 {
     char buf[256];
-    snprintf(buf,sizeof(buf), NETNS_MOUNT_DIR "/%s", host->name);
+    snprintf(buf,sizeof(buf), NETNS_MOUNT_DIR "/%08x/hosts/%s", host->db->checksum, host->name);
     return fopen(buf,"r");
 }
 
@@ -170,7 +179,7 @@ void tn_parse_error(tn_parser_t *parser, const char *fmt, ...) {
     vfprintf(stderr, fmt, args);
     va_end(args);
     fprintf(stderr, "\n");
-    parser->db.is_valid = 0;
+    parser->db->is_valid = 0;
 }
 struct tn_intf_t *tn_lookup_intf_ip(tn_host_t *host, struct nl_addr *addr)
 {
@@ -189,7 +198,7 @@ void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
     if(!name.ok || !name.u.s[0]) {
         tn_parse_error(parser, "Interface must have a name");
     }
-    tn_intf_t *intf = tn_add_intf(&parser->db, parser->cur_host, name.ok ? name.u.s : "");
+    tn_intf_t *intf = tn_add_intf(parser->db, parser->cur_host, name.ok ? name.u.s : "");
     if(!intf->is_valid) {
         tn_parse_error(parser, "Interface name must be unique");
     }
@@ -215,7 +224,7 @@ void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
                     tn_parse_error(parser, "Interface already linked to another interface");
                 }
             } else {
-                tn_db_link(&parser->db, intf, link.u.s, link_if.u.s);
+                tn_db_link(parser->db, intf, link.u.s, link_if.u.s);
             }
         }
     }
@@ -230,7 +239,7 @@ void tn_parse_host(tn_parser_t *parser, toml_table_t *thost) {
     {
         tn_parse_error(parser, "Host name maximum length is " MAX_HOST_NAME_STR);
     }
-    tn_host_t *host = tn_add_host(&parser->db, name.u.s);
+    tn_host_t *host = tn_add_host(parser->db, name.u.s);
     if(!host->is_valid) {
         tn_parse_error(parser, "Host name must be unique");
     }
@@ -257,10 +266,13 @@ void tn_parse_root(tn_parser_t *parser, toml_table_t *root) {
     }
 }
 
-void tn_db_init(tn_db_t *db) {
+tn_db_t *tn_db_new() {
+    tn_db_t *db = malloc(sizeof(tn_db_t));
     db->hosts_ll = NULL;
     db->is_valid = 1;
     db->pre_peered_count = 0;
+    db->checksum = 0;
+    return db;
 }
 
 void tn_db_destroy(tn_db_t *db) {
@@ -278,26 +290,40 @@ void tn_db_destroy(tn_db_t *db) {
     }
 }
 
-tn_db_t tn_parse(const char *file_path) {
+unsigned int xcrc32_next (unsigned char c, unsigned int crc);
+
+uint32_t checksum(FILE *f) {
+    uint32_t crc = 0xffffffff;
+    char c;
+    while((c = fgetc(f)) != EOF)
+    {
+        crc = xcrc32_next(c, crc);
+    }
+    fseek(f, 0, SEEK_SET);
+    return crc;
+}
+
+tn_db_t *tn_parse(const char *file_path) {
     tn_parser_t parser;
     parser.cur_host = NULL;
-    tn_db_init(&parser.db);
+    parser.db = tn_db_new();
     char errbuf[256];
     memset(errbuf, 0, sizeof(errbuf));
     FILE *file = fopen(file_path, "rb");
     if(!file) {
         tn_parse_error(&parser, "failed to open file: %s\n", file_path);
     } else {
+        parser.db->checksum = checksum(file);
         toml_table_t *root = toml_parse_file(file, errbuf, sizeof(errbuf));
         if(!root) {
             tn_parse_error(&parser, "incorrect TOML format in file: %s\n%s\n", file_path, errbuf);
         }
         tn_parse_root(&parser, root);
-        if(parser.db.pre_peered_count) {
+        if(parser.db->pre_peered_count) {
             tn_host_t *host;
             tn_intf_t *intf;
             size_t _i, _j;
-            ll_foreach(parser.db.hosts_ll, host, _j) {
+            ll_foreach(parser.db->hosts_ll, host, _j) {
                 if(host->created_for) {
                     tn_parse_error(&parser, "Host %s refered to as peer, but not created explicitly\n", host->name);
                 }
@@ -305,10 +331,10 @@ tn_db_t tn_parse(const char *file_path) {
                     tn_parse_error(&parser, "Interface %s/%s refered to as peer interface, but not created explicitly\n", host->name, intf->name);
                 }    
             }
-            parser.db.is_valid = 0;
+            parser.db->is_valid = 0;
         }
-        if(!parser.db.is_valid) {
-            tn_db_destroy(&parser.db);
+        if(!parser.db->is_valid) {
+            tn_db_destroy(parser.db);
         }
     }
     return parser.db;
@@ -339,7 +365,7 @@ void tn_create_host(tn_host_t *host)
         char target_path[256];
         char source_path[256];
         snprintf(source_path, sizeof(source_path), "/proc/%d/ns/net", mypid);
-        snprintf(target_path, sizeof(target_path), NETNS_MOUNT_DIR "/%s", host->name);
+        snprintf(target_path, sizeof(target_path), NETNS_MOUNT_DIR "/%08x/hosts/%s", host->db->checksum, host->name);
         if(!touch(target_path) || mount(source_path, target_path, "proc", MS_BIND | MS_SHARED, NULL) == -1) {
             perror("FATAL: failed to mount netns");
             exit(1);
@@ -494,33 +520,82 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
     }
 }
 
+/*
+    - /run/tomnet
+        - sim
+            - 73847632874843
+                - hosts
+                    - h1
+                    - h2
+                    - h3
+        - lockfile
+*/
+
+void tn_lock()
+{
+    FILE *lockfile = fopen(LOCKFILE_PATH,"w+");
+    if(!lockfile) {
+        perror("Failed to gain lock");
+        exit(1);
+    }
+    lockf(fileno(lockfile), F_LOCK, 0);
+    fclose(lockfile);
+}
+
+void tn_unlock()
+{
+    FILE *lockfile = fopen(LOCKFILE_PATH,"w+");
+    if(!lockfile) {
+        perror("Failed to gain lock");
+        exit(1);
+    }
+    lockf(fileno(lockfile), F_ULOCK, 0);
+    fclose(lockfile);
+}
+
 int main(int argc, char **argv)
 {
     tn_host_t *host;
     tn_intf_t *intf;
     size_t _i, _j;
     struct nl_sock *nlsock;
-    tn_db_t db = tn_parse(argv[1]);
-    if(!db.is_valid) {
+    tn_db_t *db = tn_parse(argv[1]);
+    if(!db->is_valid) {
         return 1;
     }
     nlsock = nl_socket_alloc();
     if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
-        printf("can't create rt_netlink socket\n");
+        printf("Can't create rt_netlink socket\n");
         return 1;
     }
-    ll_foreach(db.hosts_ll, host, _j) {
+    tn_lock();
+    int err;
+    char buf[64];
+    snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%08x", db->checksum);
+    if((err = mkdir(buf,774)) < 0)
+    {
+        if(errno == EEXIST) {
+            fprintf(stderr,"Simulation already up; if you want to run it anyway, run again with '-n <NAME>'\n");
+        } else {
+            perror("Failed to start simulation");
+        }
+        exit(1);
+    }
+    snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%08x/hosts", db->checksum);
+    mkdir(buf,774);
+    ll_foreach(db->hosts_ll, host, _j) {
         tn_create_host(host);
     }
-    ll_foreach(db.hosts_ll, host, _j) {
+    ll_foreach(db->hosts_ll, host, _j) {
         ll_foreach(host->intfs_ll, intf, _i) {
             tn_create_intf(intf, nlsock);
         }
     }
-    ll_foreach(db.hosts_ll, host, _j) {
+    ll_foreach(db->hosts_ll, host, _j) {
         tn_up_hosts(host);
     }
+    tn_unlock();
     nl_close(nlsock);
     nl_socket_free(nlsock);
-    return !db.is_valid;
+    return !db->is_valid;
 }

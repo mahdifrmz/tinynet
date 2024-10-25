@@ -4,6 +4,7 @@
         "stdarg.h": "c",
         "sched.h": "c",
         "mount.h": "c",
-        "netlink.h": "c"
+        "netlink.h": "c",
+        "types.h": "c"
     },
 }

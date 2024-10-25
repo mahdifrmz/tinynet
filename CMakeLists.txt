@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 project(tomnet)
 
 add_executable(${PROJECT_NAME}
+    src/crc32.c
     src/main.c
     toml/toml.c
 )
