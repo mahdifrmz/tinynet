@@ -531,7 +531,7 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
         - lockfile
 */
 
-void tn_lock()
+FILE *tn_lock()
 {
     FILE *lockfile = fopen(LOCKFILE_PATH,"w+");
     if(!lockfile) {
@@ -539,36 +539,17 @@ void tn_lock()
         exit(1);
     }
     lockf(fileno(lockfile), F_LOCK, 0);
-    fclose(lockfile);
+    return lockfile;
 }
 
-void tn_unlock()
+void tn_unlock(FILE *lockfile)
 {
-    FILE *lockfile = fopen(LOCKFILE_PATH,"w+");
-    if(!lockfile) {
-        perror("Failed to gain lock");
-        exit(1);
-    }
     lockf(fileno(lockfile), F_ULOCK, 0);
     fclose(lockfile);
 }
 
-int main(int argc, char **argv)
+void tn_sim_mkdir(tn_db_t *db)
 {
-    tn_host_t *host;
-    tn_intf_t *intf;
-    size_t _i, _j;
-    struct nl_sock *nlsock;
-    tn_db_t *db = tn_parse(argv[1]);
-    if(!db->is_valid) {
-        return 1;
-    }
-    nlsock = nl_socket_alloc();
-    if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
-        printf("Can't create rt_netlink socket\n");
-        return 1;
-    }
-    tn_lock();
     int err;
     char buf[64];
     snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%08x", db->checksum);
@@ -583,6 +564,26 @@ int main(int argc, char **argv)
     }
     snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%08x/hosts", db->checksum);
     mkdir(buf,774);
+}
+
+int main(int argc, char **argv)
+{
+    tn_host_t *host;
+    tn_intf_t *intf;
+    size_t _i, _j;
+    struct nl_sock *nlsock;
+    FILE *lockfile;
+    tn_db_t *db = tn_parse(argv[1]);
+    if(!db->is_valid) {
+        return 1;
+    }
+    nlsock = nl_socket_alloc();
+    if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
+        printf("Can't create rt_netlink socket\n");
+        return 1;
+    }
+    lockfile = tn_lock();
+    tn_sim_mkdir(db);
     ll_foreach(db->hosts_ll, host, _j) {
         tn_create_host(host);
     }
@@ -594,7 +595,7 @@ int main(int argc, char **argv)
     ll_foreach(db->hosts_ll, host, _j) {
         tn_up_hosts(host);
     }
-    tn_unlock();
+    tn_unlock(lockfile);
     nl_close(nlsock);
     nl_socket_free(nlsock);
     return !db->is_valid;
