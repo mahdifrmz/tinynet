@@ -533,10 +533,18 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
 
 FILE *tn_lock()
 {
+    int mode = 0664;
+    mkdir("/run/tomnet", mode);
     FILE *lockfile = fopen(LOCKFILE_PATH,"w+");
     if(!lockfile) {
         perror("Failed to gain lock");
         exit(1);
+    }
+    if(mkdir("/run/tomnet/sim", mode) == 0) {
+        if (mount("", "/run/tomnet/sim", "tmpfs", MS_SHARED | MS_REC, NULL) < -1) {
+            perror("Failed to mount Tomnet tmpfs");
+            exit(1);
+        }
     }
     lockf(fileno(lockfile), F_LOCK, 0);
     return lockfile;
@@ -566,37 +574,127 @@ void tn_sim_mkdir(tn_db_t *db)
     mkdir(buf,774);
 }
 
+enum {
+    OP_UP,
+    OP_DOWN,
+    OP_LIST,
+};
+
+void print_help()
+{
+    printf(
+        "Usage: tomnet [operation] <toml file>\n"
+        "       tomnet list\n"
+        "\n"
+        "       operation = 'up'(default) | 'down'\n"
+    );
+}
+
+int argparse_op(const char *str) {
+    if(!strcmp(str,"up"))
+        return OP_UP;
+    if(!strcmp(str,"down"))
+        return OP_DOWN;
+    if(!strcmp(str,"list"))
+        return OP_LIST;
+    fprintf(stderr, "Unknown operation '%s'\n", str);
+    print_help();
+    exit(1);
+}
+
+void argparse(int argc, char **argv, int *op, char **path)
+{
+    if(argc < 2) {
+        print_help();
+        exit(1);
+    }
+    else if(argc == 2) {
+        *path = argv[1];
+        *op = OP_UP;
+    }
+    else {
+        *path = argv[2];
+        *op = argparse_op(argv[1]);
+    }
+}
+
+#include <dirent.h>
+
 int main(int argc, char **argv)
 {
     tn_host_t *host;
     tn_intf_t *intf;
     size_t _i, _j;
     struct nl_sock *nlsock;
+    tn_db_t *db;
     FILE *lockfile;
-    tn_db_t *db = tn_parse(argv[1]);
-    if(!db->is_valid) {
-        return 1;
-    }
-    nlsock = nl_socket_alloc();
-    if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
-        printf("Can't create rt_netlink socket\n");
-        return 1;
-    }
-    lockfile = tn_lock();
-    tn_sim_mkdir(db);
-    ll_foreach(db->hosts_ll, host, _j) {
-        tn_create_host(host);
-    }
-    ll_foreach(db->hosts_ll, host, _j) {
-        ll_foreach(host->intfs_ll, intf, _i) {
-            tn_create_intf(intf, nlsock);
+    int op;
+    char *path;
+
+    argparse(argc, argv, &op, &path);
+    
+    if(op == OP_LIST) {
+        DIR *dir = opendir(NETNS_MOUNT_DIR);
+        if(dir) {
+            struct dirent *ent;
+            while((ent = readdir(dir))) {
+                printf("%s\n",ent->d_name);
+            }
         }
+    } else if (op == OP_DOWN) {
+        FILE *tomlfile = fopen(path, "r");
+        if(!tomlfile) {
+            fprintf(stderr, "failed to open file '%s'", path);
+            exit(1);
+        }
+        uint32_t cs = checksum(tomlfile);
+        fclose(tomlfile); 
+        lockfile = tn_lock();
+        char path_buf[512];
+        int len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/hosts/", cs);
+        DIR *dir = opendir(path_buf);
+        if(dir) {
+            struct dirent *ent;
+            while((ent = readdir(dir))) {
+                sprintf(path_buf + len, "%s", ent->d_name);
+                if(umount(path_buf) < 1) {
+                    perror("FATAL");
+                    exit(1);
+                }
+                if(unlink(path_buf) < 1) {
+                    perror("FATAL");
+                    exit(1);
+                }
+            }
+        }
+        rmdir(path_buf);
+        tn_unlock(lockfile);
+    } else {
+        db = tn_parse(path);
+        if(!db->is_valid) {
+            return 1;
+        }
+        nlsock = nl_socket_alloc();
+        if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
+            printf("Can't create rt_netlink socket\n");
+            return 1;
+        }
+        lockfile = tn_lock();
+        tn_sim_mkdir(db);
+        ll_foreach(db->hosts_ll, host, _j) {
+            tn_create_host(host);
+        }
+        ll_foreach(db->hosts_ll, host, _j) {
+            ll_foreach(host->intfs_ll, intf, _i) {
+                tn_create_intf(intf, nlsock);
+            }
+        }
+        ll_foreach(db->hosts_ll, host, _j) {
+            tn_up_hosts(host);
+        }
+        tn_unlock(lockfile);
+        nl_close(nlsock);
+        nl_socket_free(nlsock);
+        return !db->is_valid;
     }
-    ll_foreach(db->hosts_ll, host, _j) {
-        tn_up_hosts(host);
-    }
-    tn_unlock(lockfile);
-    nl_close(nlsock);
-    nl_socket_free(nlsock);
-    return !db->is_valid;
 }
