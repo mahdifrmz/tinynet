@@ -609,8 +609,11 @@ void argparse(int argc, char **argv, int *op, char **path)
         exit(1);
     }
     else if(argc == 2) {
-        *path = argv[1];
-        *op = OP_UP;
+        *op = argparse_op(argv[1]);
+        if(*op != OP_LIST) {
+            print_help();
+            exit(1);
+        }
     }
     else {
         *path = argv[2];
@@ -637,8 +640,12 @@ int main(int argc, char **argv)
         DIR *dir = opendir(NETNS_MOUNT_DIR);
         if(dir) {
             struct dirent *ent;
+            int i = 0;
             while((ent = readdir(dir))) {
-                printf("%s\n",ent->d_name);
+                if (i >= 2) {
+                    printf("%s\n",ent->d_name);
+                }
+                i++;
             }
         }
     } else if (op == OP_DOWN) {
@@ -655,18 +662,25 @@ int main(int argc, char **argv)
         DIR *dir = opendir(path_buf);
         if(dir) {
             struct dirent *ent;
+            int i = 0;
             while((ent = readdir(dir))) {
-                sprintf(path_buf + len, "%s", ent->d_name);
-                if(umount(path_buf) < 1) {
-                    perror("FATAL");
-                    exit(1);
+                if (i >= 2) {
+                    sprintf(path_buf + len, "%s", ent->d_name);
+                    if(umount(path_buf) < 0) {
+                        perror("FATAL");
+                        exit(1);
+                    }
+                    if(remove(path_buf) < 0) {
+                        perror("FATAL");
+                        exit(1);
+                    }
                 }
-                if(unlink(path_buf) < 1) {
-                    perror("FATAL");
-                    exit(1);
-                }
+                i++;
             }
         }
+        path_buf[len] = 0;
+        rmdir(path_buf);
+        snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/", cs);
         rmdir(path_buf);
         tn_unlock(lockfile);
     } else {
@@ -697,4 +711,5 @@ int main(int argc, char **argv)
         nl_socket_free(nlsock);
         return !db->is_valid;
     }
+    return 0;
 }
