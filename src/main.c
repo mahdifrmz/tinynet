@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <net/if.h>
 #include <errno.h>
+#include <dirent.h>
 #include <netlink/netlink.h>
 #include <netlink/route/rtnl.h>
 #include <netlink/route/link.h>
@@ -586,7 +587,9 @@ void print_help()
         "Usage: tomnet [operation] <toml file>\n"
         "       tomnet list\n"
         "\n"
-        "       operation = 'up'(default) | 'down'\n"
+        "   operation:\n"
+        "       up (default)\n"
+        "       down\n"
     );
 }
 
@@ -621,8 +624,6 @@ void argparse(int argc, char **argv, int *op, char **path)
     }
 }
 
-#include <dirent.h>
-
 int main(int argc, char **argv)
 {
     tn_host_t *host;
@@ -635,7 +636,12 @@ int main(int argc, char **argv)
     char *path;
 
     argparse(argc, argv, &op, &path);
-    
+
+    if(geteuid() != 0) {
+        fprintf(stderr,"Tomnet requires root priviledges, run again as root");
+        exit(1);
+    }
+
     if(op == OP_LIST) {
         DIR *dir = opendir(NETNS_MOUNT_DIR);
         if(dir) {
@@ -677,12 +683,15 @@ int main(int argc, char **argv)
                 }
                 i++;
             }
+            path_buf[len] = 0;
+            rmdir(path_buf);
+            snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/", cs);
+            rmdir(path_buf);
+            tn_unlock(lockfile);
+        } else {
+            fprintf(stderr, "Simulation is not running\n");
+            return 1;
         }
-        path_buf[len] = 0;
-        rmdir(path_buf);
-        snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/", cs);
-        rmdir(path_buf);
-        tn_unlock(lockfile);
     } else {
         db = tn_parse(path);
         if(!db->is_valid) {

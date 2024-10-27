@@ -14,3 +14,5 @@ add_definitions(-Wall -Werror)
 
 target_include_directories(${PROJECT_NAME} PRIVATE toml)
 target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/libnl3)
+
+install(TARGETS tomnet)
