@@ -579,6 +579,7 @@ enum {
     OP_UP,
     OP_DOWN,
     OP_LIST,
+    OP_RUN,
 };
 
 void print_help()
@@ -590,6 +591,7 @@ void print_help()
         "   operation:\n"
         "       up (default)\n"
         "       down\n"
+        "       run\n"
     );
 }
 
@@ -598,6 +600,8 @@ int argparse_op(const char *str) {
         return OP_UP;
     if(!strcmp(str,"down"))
         return OP_DOWN;
+    if(!strcmp(str,"run"))
+        return OP_RUN;
     if(!strcmp(str,"list"))
         return OP_LIST;
     fprintf(stderr, "Unknown operation '%s'\n", str);
@@ -624,6 +628,100 @@ void argparse(int argc, char **argv, int *op, char **path)
     }
 }
 
+void cli_list()
+{
+    DIR *dir = opendir(NETNS_MOUNT_DIR);
+    if(dir) {
+        struct dirent *ent;
+        int i = 0;
+        while((ent = readdir(dir))) {
+            if (i >= 2) {
+                printf("%s\n",ent->d_name);
+            }
+            i++;
+        }
+    }
+}
+
+void cli_down(const char *path)
+{
+    FILE *lockfile;
+    FILE *tomlfile = fopen(path, "r");
+    if(!tomlfile) {
+        fprintf(stderr, "failed to open file '%s'", path);
+        exit(1);
+    }
+    uint32_t cs = checksum(tomlfile);
+    fclose(tomlfile); 
+    lockfile = tn_lock();
+    char path_buf[512];
+    int len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/hosts/", cs);
+    DIR *dir = opendir(path_buf);
+    if(dir) {
+        struct dirent *ent;
+        int i = 0;
+        while((ent = readdir(dir))) {
+            if (i >= 2) {
+                sprintf(path_buf + len, "%s", ent->d_name);
+                if(umount(path_buf) < 0) {
+                    perror("FATAL");
+                    exit(1);
+                }
+                if(remove(path_buf) < 0) {
+                    perror("FATAL");
+                    exit(1);
+                }
+            }
+            i++;
+        }
+        path_buf[len] = 0;
+        rmdir(path_buf);
+        snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/", cs);
+        rmdir(path_buf);
+        tn_unlock(lockfile);
+    } else {
+        fprintf(stderr, "Simulation is not running\n");
+        return 1;
+    }
+}
+
+void cli_up(const char *path)
+{
+    tn_host_t *host;
+    tn_intf_t *intf;
+    size_t _i, _j;
+    struct nl_sock *nlsock;
+    tn_db_t *db;
+    FILE *lockfile;
+
+    db = tn_parse(path);
+    if(!db->is_valid) {
+        return 1;
+    }
+    nlsock = nl_socket_alloc();
+    if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
+        printf("Can't create rt_netlink socket\n");
+        return 1;
+    }
+    lockfile = tn_lock();
+    tn_sim_mkdir(db);
+    ll_foreach(db->hosts_ll, host, _j) {
+        tn_create_host(host);
+    }
+    ll_foreach(db->hosts_ll, host, _j) {
+        ll_foreach(host->intfs_ll, intf, _i) {
+            tn_create_intf(intf, nlsock);
+        }
+    }
+    ll_foreach(db->hosts_ll, host, _j) {
+        tn_up_hosts(host);
+    }
+    tn_unlock(lockfile);
+    nl_close(nlsock);
+    nl_socket_free(nlsock);
+    return !db->is_valid;
+}
+
 int main(int argc, char **argv)
 {
     tn_host_t *host;
@@ -643,82 +741,11 @@ int main(int argc, char **argv)
     }
 
     if(op == OP_LIST) {
-        DIR *dir = opendir(NETNS_MOUNT_DIR);
-        if(dir) {
-            struct dirent *ent;
-            int i = 0;
-            while((ent = readdir(dir))) {
-                if (i >= 2) {
-                    printf("%s\n",ent->d_name);
-                }
-                i++;
-            }
-        }
+        cli_list();
     } else if (op == OP_DOWN) {
-        FILE *tomlfile = fopen(path, "r");
-        if(!tomlfile) {
-            fprintf(stderr, "failed to open file '%s'", path);
-            exit(1);
-        }
-        uint32_t cs = checksum(tomlfile);
-        fclose(tomlfile); 
-        lockfile = tn_lock();
-        char path_buf[512];
-        int len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/hosts/", cs);
-        DIR *dir = opendir(path_buf);
-        if(dir) {
-            struct dirent *ent;
-            int i = 0;
-            while((ent = readdir(dir))) {
-                if (i >= 2) {
-                    sprintf(path_buf + len, "%s", ent->d_name);
-                    if(umount(path_buf) < 0) {
-                        perror("FATAL");
-                        exit(1);
-                    }
-                    if(remove(path_buf) < 0) {
-                        perror("FATAL");
-                        exit(1);
-                    }
-                }
-                i++;
-            }
-            path_buf[len] = 0;
-            rmdir(path_buf);
-            snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/", cs);
-            rmdir(path_buf);
-            tn_unlock(lockfile);
-        } else {
-            fprintf(stderr, "Simulation is not running\n");
-            return 1;
-        }
+        cli_down(path);
     } else {
-        db = tn_parse(path);
-        if(!db->is_valid) {
-            return 1;
-        }
-        nlsock = nl_socket_alloc();
-        if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
-            printf("Can't create rt_netlink socket\n");
-            return 1;
-        }
-        lockfile = tn_lock();
-        tn_sim_mkdir(db);
-        ll_foreach(db->hosts_ll, host, _j) {
-            tn_create_host(host);
-        }
-        ll_foreach(db->hosts_ll, host, _j) {
-            ll_foreach(host->intfs_ll, intf, _i) {
-                tn_create_intf(intf, nlsock);
-            }
-        }
-        ll_foreach(db->hosts_ll, host, _j) {
-            tn_up_hosts(host);
-        }
-        tn_unlock(lockfile);
-        nl_close(nlsock);
-        nl_socket_free(nlsock);
-        return !db->is_valid;
+        cli_up(path);
     }
     return 0;
 }
