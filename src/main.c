@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <getopt.h>
 #include <stdio.h>
 #include <toml.h>
 #include <string.h>
@@ -19,11 +20,13 @@
 #include <netlink/route/link.h>
 #include <netlink/route/addr.h>
 #include <netlink/route/link/veth.h>
+#include <assert.h>
 #include "ll.h"
 
 #define NETNS_MOUNT_DIR "/run/tomnet/sim"
 #define LOCKFILE_PATH "/run/tomnet/lock"
 
+#define MAX_SIM_NAME 128
 #define MAX_HOST_NAME 256
 #define MAX_HOST_NAME_STR "256"
 #define MAX_IF_NAME 15
@@ -61,6 +64,7 @@ struct tn_db_t {
     int is_valid;
     tn_host_t *hosts_ll;
     uint32_t checksum;
+    char name[MAX_SIM_NAME];
 };
 
 typedef struct {
@@ -170,7 +174,7 @@ void tn_db_link(tn_db_t *db, tn_intf_t *intf, const char *peer_name, const char 
 FILE *tn_host_ns_file(tn_host_t *host)
 {
     char buf[256];
-    snprintf(buf,sizeof(buf), NETNS_MOUNT_DIR "/%08x/hosts/%s", host->db->checksum, host->name);
+    snprintf(buf,sizeof(buf), NETNS_MOUNT_DIR "/%s/hosts/%s", host->db->name, host->name);
     return fopen(buf,"r");
 }
 
@@ -366,7 +370,7 @@ void tn_create_host(tn_host_t *host)
         char target_path[256];
         char source_path[256];
         snprintf(source_path, sizeof(source_path), "/proc/%d/ns/net", mypid);
-        snprintf(target_path, sizeof(target_path), NETNS_MOUNT_DIR "/%08x/hosts/%s", host->db->checksum, host->name);
+        snprintf(target_path, sizeof(target_path), NETNS_MOUNT_DIR "/%s/hosts/%s", host->db->name, host->name);
         if(!touch(target_path) || mount(source_path, target_path, "proc", MS_BIND | MS_SHARED, NULL) == -1) {
             perror("FATAL: failed to mount netns");
             exit(1);
@@ -529,6 +533,10 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
                     - h1
                     - h2
                     - h3
+            - user-provided-name
+                - hosts
+                    - h1
+                    - h2
         - lockfile
 */
 
@@ -557,80 +565,46 @@ void tn_unlock(FILE *lockfile)
     fclose(lockfile);
 }
 
-void tn_sim_mkdir(tn_db_t *db)
-{
-    int err;
-    char buf[64];
-    snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%08x", db->checksum);
-    if((err = mkdir(buf,774)) < 0)
-    {
-        if(errno == EEXIST) {
-            fprintf(stderr,"Simulation already up; if you want to run it anyway, run again with '-n <NAME>'\n");
-        } else {
-            perror("Failed to start simulation");
-        }
-        exit(1);
-    }
-    snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%08x/hosts", db->checksum);
-    mkdir(buf,774);
-}
-
 enum {
+    OP_UNKNOWN,
     OP_UP,
     OP_DOWN,
     OP_LIST,
     OP_RUN,
+    OP_SHOW,
 };
 
-void print_help()
-{
-    printf(
-        "Usage: tomnet [operation] <toml file>\n"
-        "       tomnet list\n"
-        "\n"
-        "   operation:\n"
-        "       up (default)\n"
-        "       down\n"
-        "       run\n"
-    );
-}
+typedef struct {
+    int operation;
+    char *path;
+    char *name;
+    char *host;
+    char *run_program;
+    char **run_argv;
+    int run_argc;
+} tn_args;
 
-int argparse_op(const char *str) {
-    if(!strcmp(str,"up"))
-        return OP_UP;
-    if(!strcmp(str,"down"))
-        return OP_DOWN;
-    if(!strcmp(str,"run"))
-        return OP_RUN;
-    if(!strcmp(str,"list"))
-        return OP_LIST;
-    fprintf(stderr, "Unknown operation '%s'\n", str);
-    print_help();
-    exit(1);
-}
-
-void argparse(int argc, char **argv, int *op, char **path)
-{
-    if(argc < 2) {
-        print_help();
-        exit(1);
-    }
-    else if(argc == 2) {
-        *op = argparse_op(argv[1]);
-        if(*op != OP_LIST) {
-            print_help();
-            exit(1);
-        }
-    }
-    else {
-        *path = argv[2];
-        *op = argparse_op(argv[1]);
-    }
-}
-
-void cli_list()
+void cli_list(tn_args args)
 {
     DIR *dir = opendir(NETNS_MOUNT_DIR);
+    (void)args;
+    if(dir) {
+        struct dirent *ent;
+        int i = 0;
+        while((ent = readdir(dir))) {
+            if (i >= 2) {
+               printf("%s\n",ent->d_name);
+            }
+            i++;
+        }
+    }
+}
+
+void cli_show(tn_args args)
+{
+    char path_buf[512];
+    snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s/hosts/", args.name);
+    DIR *dir = opendir(path_buf);
     if(dir) {
         struct dirent *ent;
         int i = 0;
@@ -640,22 +614,55 @@ void cli_list()
             }
             i++;
         }
+    } else {
+        fprintf(stderr, "Simulation '%s' does not exist\n", args.name);
+        exit(1);
     }
 }
 
-void cli_down(const char *path)
+void cli_run(tn_args args)
+{
+    FILE *nsfile;
+    DIR *simdir;
+    char path_buf[512];
+    int len, pid = 0;
+        len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s", args.name);
+        simdir = opendir(path_buf);
+        if(!simdir) {
+            fprintf(stderr, "Simulation '%s' not found\n", args.name);
+            exit(1);
+        }
+        snprintf(path_buf + len, sizeof(path_buf) - len, "/hosts/%s", args.host);
+        nsfile = fopen(path_buf, "r");
+        if(!nsfile) {
+            fprintf(stderr, "Host '%s' in simulation '%s' not found\n", args.host, args.name);
+            exit(1);
+        }
+        if (setns(fileno(nsfile), CLONE_NEWNET) == -1) {
+            perror("Failed to attach to namespace");
+            exit(1);
+        }
+        fclose(nsfile);
+        if(execvp(args.run_program, args.run_argv)) {
+            perror("Failed to execute");
+            exit(1);
+        }
+    if(!pid) {
+    } else {
+        int st;
+        waitpid(pid, &st, 0);
+        if (WEXITSTATUS(st)) {
+            exit(WEXITSTATUS(st));
+        }
+    } 
+}
+
+void cli_down(tn_args args)
 {
     FILE *lockfile;
-    FILE *tomlfile = fopen(path, "r");
-    if(!tomlfile) {
-        fprintf(stderr, "failed to open file '%s'", path);
-        exit(1);
-    }
-    uint32_t cs = checksum(tomlfile);
-    fclose(tomlfile); 
-    lockfile = tn_lock();
     char path_buf[512];
-    int len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/hosts/", cs);
+    int len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s/hosts/", args.name);
+    lockfile = tn_lock();
     DIR *dir = opendir(path_buf);
     if(dir) {
         struct dirent *ent;
@@ -676,16 +683,16 @@ void cli_down(const char *path)
         }
         path_buf[len] = 0;
         rmdir(path_buf);
-        snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%08x/", cs);
+        snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s/", args.name);
         rmdir(path_buf);
         tn_unlock(lockfile);
     } else {
         fprintf(stderr, "Simulation is not running\n");
-        return 1;
+        exit(1);
     }
 }
 
-void cli_up(const char *path)
+void cli_up(tn_args args)
 {
     tn_host_t *host;
     tn_intf_t *intf;
@@ -693,18 +700,39 @@ void cli_up(const char *path)
     struct nl_sock *nlsock;
     tn_db_t *db;
     FILE *lockfile;
+    int err, len;
+    char buf[64];
 
-    db = tn_parse(path);
+    db = tn_parse(args.path);
     if(!db->is_valid) {
-        return 1;
+        exit(1);
     }
     nlsock = nl_socket_alloc();
     if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
         printf("Can't create rt_netlink socket\n");
-        return 1;
+        exit(1);
     }
+    if(args.name) {
+        len = snprintf(db->name, sizeof(db->name), "%s", args.name);
+    } else {
+        len = snprintf(db->name, sizeof(db->name), "%08x", db->checksum);
+    }
+    len = snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%s", db->name);
     lockfile = tn_lock();
-    tn_sim_mkdir(db);
+    if((err = mkdir(buf,774)) < 0)
+    {
+        if(errno == EEXIST) {
+            fprintf(stderr,"Simulation already up\n");
+            if(!args.name) {
+                fprintf(stderr,"If you want to run it anyway, run again with '-n <NAME>'\n");
+            }
+        } else {
+            perror("Failed to start simulation");
+        }
+        exit(1);
+    }
+    snprintf(buf + len, sizeof(buf) - len, "/hosts");
+    mkdir(buf,774);
     ll_foreach(db->hosts_ll, host, _j) {
         tn_create_host(host);
     }
@@ -719,33 +747,117 @@ void cli_up(const char *path)
     tn_unlock(lockfile);
     nl_close(nlsock);
     nl_socket_free(nlsock);
-    return !db->is_valid;
+    if(!args.name) {
+        fprintf(stderr,"%s\n", db->name);
+    }
+}
+
+void print_help()
+{
+    printf(
+        "Usage: tomnet up <TOML file>\n"
+        "       tomnet <up|down|show> <sim>\n"
+        "       tomnet run <sim> <host>\n"
+        "       tomnet list\n"
+        "\n"
+        "   options:\n"
+        "       -n  --name              assign name to new simulation\n"
+    );
+}
+
+int parse_op(const char *str) {
+    if(!strcmp(str,"up"))
+        return OP_UP;
+    if(!strcmp(str,"down"))
+        return OP_DOWN;
+    if(!strcmp(str,"run"))
+        return OP_RUN;
+    if(!strcmp(str,"list"))
+        return OP_LIST;
+    if(!strcmp(str,"show"))
+        return OP_SHOW;
+    return OP_UNKNOWN;
 }
 
 int main(int argc, char **argv)
 {
-    tn_host_t *host;
-    tn_intf_t *intf;
-    size_t _i, _j;
-    struct nl_sock *nlsock;
-    tn_db_t *db;
-    FILE *lockfile;
-    int op;
-    char *path;
+    tn_args args;
+    int option_index, c;
 
-    argparse(argc, argv, &op, &path);
+    struct option long_options[] = {
+      {"name",  required_argument, 0, 'n'},
+      {0, 0, 0, 0}
+    };
 
     if(geteuid() != 0) {
         fprintf(stderr,"Tomnet requires root priviledges, run again as root");
-        exit(1);
+        return 1;
     }
 
-    if(op == OP_LIST) {
-        cli_list();
-    } else if (op == OP_DOWN) {
-        cli_down(path);
-    } else {
-        cli_up(path);
+    args.path = NULL;
+    args.name = NULL;
+    args.host = NULL;
+    args.run_program = NULL;
+    args.run_argv = NULL;
+    args.run_argc = 0;
+
+    if(argc == 1) {
+        print_help();
+        return 1;
+    }
+    args.operation = parse_op(argv[1]);
+    if(args.operation == OP_UNKNOWN) {
+        fprintf(stderr, "Unknown operation '%s'\n", argv[1]);
+        print_help();
+        return 1;
+    }
+    argv++;
+    argc--;
+
+    while(1) {
+        c = getopt_long(argc, argv, "n:", long_options, &option_index);
+        if (c == -1)
+            break;
+        switch(c) {
+            case 0:
+                printf("AAAAAAAAAAA %d\n", option_index);
+                break;
+            case 'n':
+                args.name = optarg;
+                break;
+            default:
+                fprintf(stderr, "Unknown option: '-%c'\n", c);
+                break;
+        }
+    }
+
+#define expect_arg(NAME, FIELD)    \
+    if(optind < argc) { \
+        args.FIELD = argv[optind++];   \
+    } else {    \
+        fprintf(stderr, NAME " expected.\n");    \
+        print_help();   \
+        return 1;   \
+    }
+    
+    if(args.operation == OP_UP) {
+        expect_arg("TOML file", path);
+        cli_up(args);
+    } else if(args.operation == OP_DOWN) {
+        expect_arg("Simulation name", name);
+        cli_down(args);
+    } else if(args.operation == OP_RUN) {
+        expect_arg("Simulation name", name);
+        expect_arg("Host name", host);
+        expect_arg("Command", run_program);
+        args.run_argv = argv + optind - 1;
+        args.run_argc = argc - optind;
+        cli_run(args);
+    } else if(args.operation == OP_SHOW) {
+        expect_arg("Simulation name", name);
+        cli_show(args);
+    } else if(args.operation == OP_LIST) {
+        cli_list(args);
     }
     return 0;
 }
