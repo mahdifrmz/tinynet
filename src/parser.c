@@ -19,39 +19,75 @@ typedef enum {
 typedef struct {
     TokenType type;
     char *text;
+    int line;
+    int column;
 } Token;
 
 typedef struct {
     Token currentToken;
     FILE *inputFile;
+    int line;
+    int column;
 } Parser;
+
+// Function to initialize the parser
+void initParser(Parser *parser, FILE *inputFile) {
+    parser->inputFile = inputFile;
+    parser->line = 1;
+    parser->column = 1;
+}
+
+// Helper function to advance the character position
+int advance(Parser *parser) {
+    int c = fgetc(parser->inputFile);
+    if (c == '\n') {
+        parser->line++;
+        parser->column = 1;
+    } else {
+        parser->column++;
+    }
+    return c;
+}
+
+// Helper function to handle ungetting a character
+void retreat(Parser *parser, int c) {
+    ungetc(c, parser->inputFile);
+    if (c == '\n') {
+        parser->line--;
+        // Simplified: we don't handle ungetting multiple characters back to the previous line.
+    } else {
+        parser->column--;
+    }
+}
 
 // Function to get the next token from input
 Token nextToken(Parser *parser) {
     int c;
+    Token token;
+    token.line = parser->line;
+    token.column = parser->column;
 
     // Skip whitespace except for newline
     do {
-        c = fgetc(parser->inputFile);
+        c = advance(parser);
     } while (isspace(c) && c != '\n');
 
     if (c == EOF) {
-        parser->currentToken.type = TOK_EOF;
-        parser->currentToken.text = NULL;
-        return parser->currentToken;
+        token.type = TOK_EOF;
+        token.text = NULL;
+        return token;
     }
 
-    Token token;
     if (isalpha(c) || c == '_') {
         // Parse identifier
         char buffer[256];
         int i = 0;
         buffer[i++] = c;
-        while (isalnum(c = fgetc(parser->inputFile)) || c == '_') {
+        while (isalnum(c = advance(parser)) || c == '_') {
             buffer[i++] = c;
         }
         buffer[i] = '\0';
-        ungetc(c, parser->inputFile);
+        retreat(parser, c);
         token.type = TOK_IDENT;
         token.text = strdup(buffer);
     } else if (isdigit(c)) {
@@ -61,22 +97,22 @@ Token nextToken(Parser *parser) {
         buffer[i++] = c;
 
         int hasDecimal = 0;
-        while (isdigit(c = fgetc(parser->inputFile)) || (c == '.' && !hasDecimal)) {
+        while (isdigit(c = advance(parser)) || (c == '.' && !hasDecimal)) {
             if (c == '.') hasDecimal = 1;  // Allow only one decimal point
             buffer[i++] = c;
         }
         buffer[i] = '\0';
-        ungetc(c, parser->inputFile);
+        retreat(parser, c);
         token.type = TOK_NUMBER;
         token.text = strdup(buffer);
     } else if (c == '"') {
         // Parse string with escape sequences
         char buffer[256];
         int i = 0;
-        while ((c = fgetc(parser->inputFile)) != '"' && c != EOF) {
+        while ((c = advance(parser)) != '"' && c != EOF) {
             if (c == '\\') {
                 // Handle escape sequences
-                c = fgetc(parser->inputFile);
+                c = advance(parser);
                 if (c == 'n') {
                     buffer[i++] = '\n';
                 } else if (c == 't') {
@@ -112,6 +148,8 @@ Token nextToken(Parser *parser) {
         }
     }
 
+    token.line = parser->line;
+    token.column = parser->column;
     parser->currentToken = token;
     return token;
 }
@@ -119,7 +157,8 @@ Token nextToken(Parser *parser) {
 // Expect a specific token type
 void expect(Parser *parser, TokenType expectedType) {
     if (parser->currentToken.type != expectedType) {
-        fprintf(stderr, "Parse error:expected token type %d, but got %d\n", expectedType, parser->currentToken.type);
+        fprintf(stderr, "Error at line %d, column %d: expected token type %d, but got %d\n",
+                parser->currentToken.line, parser->currentToken.column, expectedType, parser->currentToken.type);
         exit(1);
     }
     nextToken(parser);
@@ -161,14 +200,16 @@ void parseCOMP(Parser *parser) {
         } else if (parser->currentToken.type == TOK_LBRACE) {
             parseENTITY(parser);
         } else {
-            fprintf(stderr, "Parse error:expected IDENT, STRING, NUMBER, or ENTITY, but got %d\n", parser->currentToken.type);
+            fprintf(stderr, "Error at line %d, column %d: expected IDENT, STRING, NUMBER, or ENTITY, but got %d\n",
+                    parser->currentToken.line, parser->currentToken.column, parser->currentToken.type);
             exit(1);
         }
 
         // Expect ENDL token
         expect(parser, TOK_ENDL);
     } else {
-        fprintf(stderr, "Parse error:invalid start of COMP\n");
+        fprintf(stderr, "Error at line %d, column %d: invalid start of COMP\n",
+                parser->currentToken.line, parser->currentToken.column);
         exit(1);
     }
 }
@@ -181,11 +222,12 @@ int main(int argc, char **argv) {
     }
 
     Parser parser;
-    parser.inputFile = fopen(argv[1], "r");
-    if (!parser.inputFile) {
+    FILE *inputFile = fopen(argv[1], "r");
+    if (!inputFile) {
         perror("Error opening file");
         return 1;
     }
+    initParser(&parser, inputFile);
 
     nextToken(&parser);  // Initialize first token
     parseDOC(&parser);   // Start parsing from DOC rule
@@ -193,9 +235,10 @@ int main(int argc, char **argv) {
     if (parser.currentToken.type == TOK_EOF) {
         printf("Parsing completed successfully.\n");
     } else {
-        fprintf(stderr, "Parse error:unexpected token at end of input\n");
+        fprintf(stderr, "Error at line %d, column %d: unexpected token at end of input\n",
+                parser.currentToken.line, parser.currentToken.column);
     }
 
-    fclose(parser.inputFile);
+    fclose(inputFile);
     return 0;
 }
