@@ -54,7 +54,6 @@ void retreat(Parser *parser, int c) {
     ungetc(c, parser->inputFile);
     if (c == '\n') {
         parser->line--;
-        // Simplified: we don't handle ungetting multiple characters back to the previous line.
     } else {
         parser->column--;
     }
@@ -124,7 +123,6 @@ Token nextToken(Parser *parser) {
                 } else if (c == '\\') {
                     buffer[i++] = '\\';
                 } else {
-                    // Unrecognized escape character, treat as literal
                     buffer[i++] = '\\';
                     buffer[i++] = c;
                 }
@@ -175,8 +173,11 @@ void parseDOC(Parser *parser) {
     parseBODY(parser);
 }
 
-// ENTITY := '{' BODY '}'
+// ENTITY := [ IDENT | STRING ] '{' BODY '}'
 void parseENTITY(Parser *parser) {
+    if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING) {
+        nextToken(parser);
+    }
     expect(parser, TOK_LBRACE);
     parseBODY(parser);
     expect(parser, TOK_RBRACE);
