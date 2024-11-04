@@ -214,32 +214,3 @@ void parseCOMP(Parser *parser) {
         exit(1);
     }
 }
-
-// Main function to initialize parser and start parsing
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <input file>\n", argv[0]);
-        return 1;
-    }
-
-    Parser parser;
-    FILE *inputFile = fopen(argv[1], "r");
-    if (!inputFile) {
-        perror("Error opening file");
-        return 1;
-    }
-    initParser(&parser, inputFile);
-
-    nextToken(&parser);  // Initialize first token
-    parseDOC(&parser);   // Start parsing from DOC rule
-
-    if (parser.currentToken.type == TOK_EOF) {
-        printf("Parsing completed successfully.\n");
-    } else {
-        fprintf(stderr, "Error at line %d, column %d: unexpected token at end of input\n",
-                parser.currentToken.line, parser.currentToken.column);
-    }
-
-    fclose(inputFile);
-    return 0;
-}
