@@ -1,12 +1,65 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <vector.h>
+
+typedef struct value_t value_t;
+typedef int32_t tncfg_id;
+
+enum {
+    TYPE_INTEGER = 0x1,
+    TYPE_STRING = 0x2,
+    TYPE_DECIMAL = 0x4,
+    TYPE_ENTITY = 0x8,
+    TYPE_OPTION = 0x10,
+    TYPE_ELEMENT = 0x20,
+};
+
+struct value_t {
+    char *tag;
+    int type;
+    union {
+        struct {
+            tncfg_id from; // inclusive
+            tncfg_id to // exclusive
+        } entity;
+        uint64_t integer;
+        long double decimal;
+        char *string;
+    } data;
+};
+
+typedef struct {
+    value_t *data;
+    size_t size;
+    size_t capacity;
+} tncfg;
+
+void tncfg_init(tncfg *tncfg) {
+    tncfg->data = malloc(16 * sizeof(value_t));
+    tncfg->size = 0;
+    tncfg->capacity = 16;
+}
+
+void tncfg_add(tncfg *tncfg, value_t element) {
+    if (tncfg->size == tncfg->capacity) {
+        tncfg->capacity = 2 * sizeof(value_t);
+        tncfg->data = realloc(tncfg->data, tncfg->capacity);
+    }
+    tncfg->data[tncfg->size++] = element;
+}
+
+void tncfg_destroy(tncfg *tncfg) {
+    free(tncfg->data);
+}
 
 typedef enum {
     TOK_IDENT,
     TOK_STRING,
-    TOK_NUMBER,
+    TOK_INTEGER,
+    TOK_DECIMAL,
     TOK_PLUS,
     TOK_MINUS,
     TOK_LBRACE,
@@ -26,6 +79,7 @@ typedef struct {
 typedef struct {
     Token currentToken;
     FILE *inputFile;
+    tncfg cfg;
     int line;
     int column;
 } Parser;
@@ -35,6 +89,7 @@ void initParser(Parser *parser, FILE *inputFile) {
     parser->inputFile = inputFile;
     parser->line = 1;
     parser->column = 1;
+    tncfg_init(&parser->cfg);
 }
 
 // Helper function to advance the character position
@@ -102,7 +157,7 @@ Token nextToken(Parser *parser) {
         }
         buffer[i] = '\0';
         retreat(parser, c);
-        token.type = TOK_NUMBER;
+        token.type = hasDecimal ? TOK_DECIMAL : TOK_INTEGER;
         token.text = strdup(buffer);
     } else if (c == '"') {
         // Parse string with escape sequences
@@ -165,22 +220,50 @@ void expect(Parser *parser, TokenType expectedType) {
 // Forward declarations for recursive parsing functions
 void parseDOC(Parser *parser);
 void parseBODY(Parser *parser);
-void parseENTITY(Parser *parser);
+void parseENTITY(Parser *parser, char *name, int type);
 void parseCOMP(Parser *parser);
 
 // DOC := BODY
 void parseDOC(Parser *parser) {
+    value_t val;
+    val.tag = NULL;
+    val.type = TYPE_ENTITY;
+    tncfg_add(&parser->cfg, val);
+    value_t *pval = parser_last_value(parser);
+    pval->data.entity.from = parser->cfg.size;
     parseBODY(parser);
+    pval->data.entity.to = parser->cfg.size;
 }
 
 // ENTITY := [ IDENT | STRING ] '{' BODY '}'
-void parseENTITY(Parser *parser) {
+void parseENTITY(Parser *parser, char *name, int type) {
+    int has_name = 0;
     if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING) {
         nextToken(parser);
+        has_name = 1;
     }
     expect(parser, TOK_LBRACE);
+    value_t val;
+    val.tag = NULL;
+    val.type = TYPE_ENTITY | type;
+    tncfg_add(&parser->cfg, val);
+    value_t *pval = parser_last_value(parser);
+    pval->data.entity.from = parser->cfg.size;
+    if (has_name) {
+        value_t val;
+        val.tag = strdup("name");
+        val.type = TYPE_STRING;
+        tncfg_add(&parser->cfg, val);
+        nextToken(parser);
+    }
     parseBODY(parser);
+    pval->data.entity.to = parser->cfg.size;
     expect(parser, TOK_RBRACE);
+}
+
+value_t *parser_last_value(Parser *parser)
+{
+    return &parser->cfg.data[parser->cfg.size -1];
 }
 
 // BODY := COMP*
@@ -193,13 +276,24 @@ void parseBODY(Parser *parser) {
 // COMP := <IDENT|'+'|'-'> <IDENT|STRING|NUMBER|ENTITY> ENDL
 void parseCOMP(Parser *parser) {
     if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_PLUS || parser->currentToken.type == TOK_MINUS) {
+        int type = 0;
+        char *name = NULL;
+        if(parser->currentToken.type == TOK_IDENT) {
+            name = parser->currentToken.text;
+        } else if(parser->currentToken.type == TOK_MINUS) {
+            type = TYPE_ELEMENT;
+        } else if(parser->currentToken.type == TOK_PLUS) {
+            type = TYPE_OPTION;
+        }
+
         nextToken(parser);
 
         // Handle second part of COMP rule
-        if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING || parser->currentToken.type == TOK_NUMBER) {
+        if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING || parser->currentToken.type == TOK_DECIMAL
+         || parser->currentToken.type == TOK_INTEGER) {
             nextToken(parser);
         } else if (parser->currentToken.type == TOK_LBRACE) {
-            parseENTITY(parser);
+            parseENTITY(parser,name,type);
         } else {
             fprintf(stderr, "Error at line %d, column %d: expected IDENT, STRING, NUMBER, or ENTITY, but got %d\n",
                     parser->currentToken.line, parser->currentToken.column, parser->currentToken.type);
@@ -213,4 +307,23 @@ void parseCOMP(Parser *parser) {
                 parser->currentToken.line, parser->currentToken.column);
         exit(1);
     }
+}
+
+tncfg tncfg_parse(FILE *file) {
+    
+    Parser parser;
+    
+    initParser(&parser, file);
+    nextToken(&parser);  // Initialize first token
+    parseDOC(&parser);   // Start parsing from DOC rule
+
+    if (parser.currentToken.type == TOK_EOF) {
+        printf("Parsing completed successfully.\n");
+    } else {
+        fprintf(stderr, "Error at line %d, column %d: unexpected token at end of input\n",
+                parser.currentToken.line, parser.currentToken.column);
+    }
+
+    fclose(file);
+    return parser.cfg;
 }
