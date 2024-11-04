@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <vector.h>
 
 typedef struct value_t value_t;
 typedef int32_t tncfg_id;
@@ -23,10 +22,10 @@ struct value_t {
     union {
         struct {
             tncfg_id from; // inclusive
-            tncfg_id to // exclusive
+            tncfg_id to; // exclusive
         } entity;
-        uint64_t integer;
-        long double decimal;
+        int64_t integer;
+        double decimal;
         char *string;
     } data;
 };
@@ -148,6 +147,12 @@ Token nextToken(Parser *parser) {
         // Parse integer or decimal number
         char buffer[256];
         int i = 0;
+
+        if (c == '-') {
+            buffer[i++] = c;
+            c = advance(parser);
+        }
+
         buffer[i++] = c;
 
         int hasDecimal = 0;
@@ -223,6 +228,11 @@ void parseBODY(Parser *parser);
 void parseENTITY(Parser *parser, char *name, int type);
 void parseCOMP(Parser *parser);
 
+value_t *parser_last_value(Parser *parser)
+{
+    return &parser->cfg.data[parser->cfg.size -1];
+}
+
 // DOC := BODY
 void parseDOC(Parser *parser) {
     value_t val;
@@ -261,11 +271,6 @@ void parseENTITY(Parser *parser, char *name, int type) {
     expect(parser, TOK_RBRACE);
 }
 
-value_t *parser_last_value(Parser *parser)
-{
-    return &parser->cfg.data[parser->cfg.size -1];
-}
-
 // BODY := COMP*
 void parseBODY(Parser *parser) {
     while (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_PLUS || parser->currentToken.type == TOK_MINUS) {
@@ -291,6 +296,17 @@ void parseCOMP(Parser *parser) {
         // Handle second part of COMP rule
         if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING || parser->currentToken.type == TOK_DECIMAL
          || parser->currentToken.type == TOK_INTEGER) {
+            value_t val;
+            if(parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING) {
+                val.type = type | TYPE_STRING;
+                val.data.string = parser->currentToken.text;
+            } else if(parser->currentToken.type == TOK_INTEGER) {
+                val.type = type | TYPE_INTEGER;
+                val.data.integer = atol(parser->currentToken.text);
+            } else {
+                val.type = type | TYPE_DECIMAL;
+                val.data.decimal = strtod(parser->currentToken.text, NULL);
+            }
             nextToken(parser);
         } else if (parser->currentToken.type == TOK_LBRACE) {
             parseENTITY(parser,name,type);
