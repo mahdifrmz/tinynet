@@ -1,40 +1,7 @@
 #include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-
-typedef struct value_t value_t;
-typedef int32_t tncfg_id;
-
-enum {
-    TYPE_INTEGER = 0x1,
-    TYPE_STRING = 0x2,
-    TYPE_DECIMAL = 0x4,
-    TYPE_ENTITY = 0x8,
-    TYPE_OPTION = 0x10,
-    TYPE_ELEMENT = 0x20,
-};
-
-struct value_t {
-    char *tag;
-    int type;
-    union {
-        struct {
-            tncfg_id from; // inclusive
-            tncfg_id to; // exclusive
-        } entity;
-        int64_t integer;
-        double decimal;
-        char *string;
-    } data;
-};
-
-typedef struct {
-    value_t *data;
-    size_t size;
-    size_t capacity;
-} tncfg;
+#include "parse.h"
 
 void tncfg_init(tncfg *tncfg) {
     tncfg->data = malloc(16 * sizeof(value_t));
@@ -44,7 +11,7 @@ void tncfg_init(tncfg *tncfg) {
 
 void tncfg_add(tncfg *tncfg, value_t element) {
     if (tncfg->size == tncfg->capacity) {
-        tncfg->capacity = 2 * sizeof(value_t);
+        tncfg->capacity = 2 * tncfg->capacity * sizeof(value_t);
         tncfg->data = realloc(tncfg->data, tncfg->capacity);
     }
     tncfg->data[tncfg->size++] = element;
@@ -128,10 +95,8 @@ Token nextToken(Parser *parser) {
     if (c == EOF) {
         token.type = TOK_EOF;
         token.text = NULL;
-        return token;
     }
-
-    if (isalpha(c) || c == '_') {
+    else if (isalpha(c) || c == '_') {
         // Parse identifier
         char buffer[256];
         int i = 0;
@@ -247,19 +212,14 @@ void parseDOC(Parser *parser) {
 
 // ENTITY := [ IDENT | STRING ] '{' BODY '}'
 void parseENTITY(Parser *parser, char *name, int type) {
-    int has_name = 0;
-    if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING) {
-        nextToken(parser);
-        has_name = 1;
-    }
     expect(parser, TOK_LBRACE);
     value_t val;
-    val.tag = NULL;
+    val.tag = name;
     val.type = TYPE_ENTITY | type;
     tncfg_add(&parser->cfg, val);
     value_t *pval = parser_last_value(parser);
     pval->data.entity.from = parser->cfg.size;
-    if (has_name) {
+    if (name) {
         value_t val;
         val.tag = strdup("name");
         val.type = TYPE_STRING;
@@ -273,13 +233,21 @@ void parseENTITY(Parser *parser, char *name, int type) {
 
 // BODY := COMP*
 void parseBODY(Parser *parser) {
-    while (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_PLUS || parser->currentToken.type == TOK_MINUS) {
+    while ( parser->currentToken.type == TOK_IDENT ||
+            parser->currentToken.type == TOK_PLUS ||
+            parser->currentToken.type == TOK_MINUS ||
+            parser->currentToken.type == TOK_ENDL )
+    {
         parseCOMP(parser);
     }
 }
 
 // COMP := <IDENT|'+'|'-'> <IDENT|STRING|NUMBER|ENTITY> ENDL
 void parseCOMP(Parser *parser) {
+    if (parser->currentToken.type == TOK_ENDL){
+        nextToken(parser);
+        return;
+    }
     if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_PLUS || parser->currentToken.type == TOK_MINUS) {
         int type = 0;
         char *name = NULL;
@@ -296,20 +264,32 @@ void parseCOMP(Parser *parser) {
         // Handle second part of COMP rule
         if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING || parser->currentToken.type == TOK_DECIMAL
          || parser->currentToken.type == TOK_INTEGER) {
-            value_t val;
+            value_t val = {
+                .tag = name,
+                .type = 0,
+            };
             if(parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING) {
                 val.type = type | TYPE_STRING;
                 val.data.string = parser->currentToken.text;
+                nextToken(parser);
+                if(parser->currentToken.type == TOK_LBRACE) {
+                    parseENTITY(parser, val.data.string, type);
+                } else {
+                    tncfg_add(&parser->cfg, val);
+                }
             } else if(parser->currentToken.type == TOK_INTEGER) {
                 val.type = type | TYPE_INTEGER;
                 val.data.integer = atol(parser->currentToken.text);
+                tncfg_add(&parser->cfg, val);
+                nextToken(parser);
             } else {
                 val.type = type | TYPE_DECIMAL;
                 val.data.decimal = strtod(parser->currentToken.text, NULL);
+                tncfg_add(&parser->cfg, val);
+                nextToken(parser);
             }
-            nextToken(parser);
         } else if (parser->currentToken.type == TOK_LBRACE) {
-            parseENTITY(parser,name,type);
+            parseENTITY(parser,NULL,type);
         } else {
             fprintf(stderr, "Error at line %d, column %d: expected IDENT, STRING, NUMBER, or ENTITY, but got %d\n",
                     parser->currentToken.line, parser->currentToken.column, parser->currentToken.type);
@@ -317,6 +297,8 @@ void parseCOMP(Parser *parser) {
         }
 
         // Expect ENDL token
+        if(parser->currentToken.type == TOK_EOF)
+            return;
         expect(parser, TOK_ENDL);
     } else {
         fprintf(stderr, "Error at line %d, column %d: invalid start of COMP\n",
@@ -342,4 +324,47 @@ tncfg tncfg_parse(FILE *file) {
 
     fclose(file);
     return parser.cfg;
+}
+
+tncfg_id tncfg_root(tncfg *cfg)
+{
+    return 0;
+}
+int tncfg_type(tncfg *cfg, tncfg_id id)
+{
+    return cfg->data[id].type;
+}
+double tncfg_get_decimal(tncfg *cfg, tncfg_id id)
+{
+    return cfg->data[id].data.decimal;
+}
+tncfg_id tncfg_entity_reset(tncfg *cfg, tncfg_id id)
+{
+    cfg->data[id].data.entity.ptr = id + 1;
+    if(cfg->data[id].data.entity.ptr == cfg->data[id].data.entity.to)
+        return -1;
+    return id + 1;
+}
+tncfg_id tncfg_entity_next(tncfg *cfg, tncfg_id id)
+{
+    tncfg_id ptr = cfg->data[id].data.entity.ptr;
+    tncfg_id to = cfg->data[id].data.entity.to;
+    int cur_type = cfg->data[ptr].type;
+    if( cur_type & TYPE_ENTITY ) {
+        tncfg_id next_start = cfg->data[ptr].data.entity.to;
+        cfg->data[id].data.entity.ptr = next_start;
+    } else {
+        cfg->data[id].data.entity.ptr++;
+    }
+    if(cfg->data[id].data.entity.ptr == to)
+        return -1;
+    return cfg->data[id].data.entity.ptr;
+}
+int32_t tncfg_get_integer(tncfg *cfg, tncfg_id id)
+{
+    return cfg->data[id].data.integer;
+}
+const char *tncfg_get_str(tncfg *cfg, tncfg_id id)
+{
+    return cfg->data[id].data.string;
 }

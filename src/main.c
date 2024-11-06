@@ -22,6 +22,7 @@
 #include <netlink/route/link/veth.h>
 #include <assert.h>
 #include "ll.h"
+#include "parse.h"
 
 #define NETNS_MOUNT_DIR "/run/tomnet/sim"
 #define LOCKFILE_PATH "/run/tomnet/lock"
@@ -783,6 +784,11 @@ int main(int argc, char **argv)
 {
     tn_args args;
     int option_index, c;
+
+    FILE *f = fopen(argv[1],"r");
+    tncfg_parse(f);
+
+    return 0;
 
     struct option long_options[] = {
       {"name",  required_argument, 0, 'n'},
