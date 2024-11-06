@@ -48,49 +48,62 @@ typedef struct {
     tncfg cfg;
     int line;
     int column;
+    int buffer;
 } Parser;
 
 // Function to initialize the parser
 void initParser(Parser *parser, FILE *inputFile) {
     parser->inputFile = inputFile;
-    parser->line = 1;
-    parser->column = 1;
+    parser->line = 0;
+    parser->column = 0;
+    parser->buffer = -2;
     tncfg_init(&parser->cfg);
 }
 
 // Helper function to advance the character position
 int advance(Parser *parser) {
-    int c = fgetc(parser->inputFile);
+    int c;
+    if (parser->buffer == -2) {
+        c = fgetc(parser->inputFile);
+    } else {
+        c = parser->buffer;
+        parser->buffer = -2;
+    }
+
     if (c == '\n') {
         parser->line++;
-        parser->column = 1;
-    } else {
+        parser->column = 0;
+    } else if(c != -1) {
         parser->column++;
     }
+
     return c;
 }
 
-// Helper function to handle ungetting a character
-void retreat(Parser *parser, int c) {
-    ungetc(c, parser->inputFile);
-    if (c == '\n') {
-        parser->line--;
+
+// Helper function to advance the character position
+int peek(Parser *parser) {
+    int c;
+    if(parser->buffer == -2) {
+        c = parser->buffer = fgetc(parser->inputFile);
     } else {
-        parser->column--;
+        c = parser->buffer;
     }
+    return c;
 }
 
 // Function to get the next token from input
 Token nextToken(Parser *parser) {
     int c;
     Token token;
-    token.line = parser->line;
-    token.column = parser->column;
 
     // Skip whitespace except for newline
-    do {
-        c = advance(parser);
-    } while (isspace(c) && c != '\n');
+    while (isspace((c = peek(parser))) && c != '\n') {
+        advance(parser);
+    }
+    token.line = parser->line + 1;
+    token.column = parser->column + 1;
+    c = advance(parser);
 
     if (c == EOF) {
         token.type = TOK_EOF;
@@ -101,11 +114,11 @@ Token nextToken(Parser *parser) {
         char buffer[256];
         int i = 0;
         buffer[i++] = c;
-        while (isalnum(c = advance(parser)) || c == '_') {
+        while (isalnum(c = peek(parser)) || c == '_') {
             buffer[i++] = c;
+            advance(parser);
         }
         buffer[i] = '\0';
-        retreat(parser, c);
         token.type = TOK_IDENT;
         token.text = strdup(buffer);
     } else if (isdigit(c)) {
@@ -121,12 +134,12 @@ Token nextToken(Parser *parser) {
         buffer[i++] = c;
 
         int hasDecimal = 0;
-        while (isdigit(c = advance(parser)) || (c == '.' && !hasDecimal)) {
+        while (isdigit(c = peek(parser)) || (c == '.' && !hasDecimal)) {
             if (c == '.') hasDecimal = 1;  // Allow only one decimal point
             buffer[i++] = c;
+            advance(parser);
         }
         buffer[i] = '\0';
-        retreat(parser, c);
         token.type = hasDecimal ? TOK_DECIMAL : TOK_INTEGER;
         token.text = strdup(buffer);
     } else if (c == '"') {
@@ -170,10 +183,8 @@ Token nextToken(Parser *parser) {
             default: token.type = TOK_UNKNOWN; break;
         }
     }
-
-    token.line = parser->line;
-    token.column = parser->column;
     parser->currentToken = token;
+    printf("--> %d [%d,%d]\n", token.type, token.line, token.column);
     return token;
 }
 
@@ -223,8 +234,8 @@ void parseENTITY(Parser *parser, char *name, int type) {
         value_t val;
         val.tag = strdup("name");
         val.type = TYPE_STRING;
+        val.data.string = name;
         tncfg_add(&parser->cfg, val);
-        nextToken(parser);
     }
     parseBODY(parser);
     pval->data.entity.to = parser->cfg.size;
