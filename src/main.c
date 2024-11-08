@@ -780,14 +780,59 @@ int parse_op(const char *str) {
     return OP_UNKNOWN;
 }
 
+void traverse(tncfg *cfg, tncfg_id root, int depth)
+{
+    for(int i=0; i<depth; i++) {
+        printf("  ");
+    }
+    switch(tncfg_tag_type(cfg, root)) {
+        case TYPE_OPTION:
+            printf("+");
+            break;
+        case TYPE_ELEMENT:
+            printf("-");
+            break;
+        default:
+            printf("%s:", tncfg_tag(cfg, root));
+            break;
+    }
+    printf(" ");
+    switch(tncfg_type(cfg, root)) {
+        case TYPE_INTEGER:
+            printf("%ld\n", tncfg_get_integer(cfg, root));
+            break;
+        case TYPE_STRING:
+            printf("%s\n", tncfg_get_string(cfg, root));
+            break;
+        case TYPE_DECIMAL:
+            printf("%lf\n", tncfg_get_decimal(cfg, root));
+            break;
+        default:
+            printf("\n");
+            tncfg_id child = tncfg_entity_reset(cfg, root);
+            while(child != -1) {
+                traverse(cfg, child, depth + 1);
+                child = tncfg_entity_next(cfg, root);
+            }
+            break;
+    }
+}
+
+struct comp {
+    const char *name;
+    int type;
+    void (*cb)(void*);
+};
+
 int main(int argc, char **argv)
 {
     tn_args args;
     int option_index, c;
 
     FILE *f = fopen(argv[1],"r");
-    tncfg_parse(f);
-
+    tncfg cfg = tncfg_parse(f);
+    traverse(&cfg, tncfg_root(&cfg), 0);
+    tncfg_destroy(&cfg);
     return 0;
 
     struct option long_options[] = {

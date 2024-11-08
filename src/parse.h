@@ -45,7 +45,11 @@ int tncfg_type(tncfg *cfg, tncfg_id id);
 double tncfg_get_decimal(tncfg *cfg, tncfg_id id);
 tncfg_id tncfg_entity_reset(tncfg *cfg, tncfg_id id);
 tncfg_id tncfg_entity_next(tncfg *cfg, tncfg_id id);
-int32_t tncfg_get_integer(tncfg *cfg, tncfg_id id);
-const char *tncfg_get_str(tncfg *cfg, tncfg_id id);
+int64_t tncfg_get_integer(tncfg *cfg, tncfg_id id);
+const char *tncfg_get_string(tncfg *cfg, tncfg_id id);
+int tncfg_tag_type(tncfg *cfg, tncfg_id id);
+char *tncfg_tag(tncfg *cfg, tncfg_id id);
+
+void tncfg_destroy(tncfg *tncfg);
 
 #endif
