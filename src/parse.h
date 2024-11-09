@@ -49,7 +49,8 @@ int64_t tncfg_get_integer(tncfg *cfg, tncfg_id id);
 const char *tncfg_get_string(tncfg *cfg, tncfg_id id);
 int tncfg_tag_type(tncfg *cfg, tncfg_id id);
 char *tncfg_tag(tncfg *cfg, tncfg_id id);
-
+tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name);
+tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name);
 void tncfg_destroy(tncfg *tncfg);
 
 #endif

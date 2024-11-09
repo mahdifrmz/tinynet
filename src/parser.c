@@ -404,3 +404,24 @@ const char *tncfg_get_string(tncfg *cfg, tncfg_id id)
 {
     return cfg->data[id].data.string;
 }
+tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name)
+{
+    tncfg_id child;
+    do {
+        child = tncfg_entity_next(cfg, id);
+    } while (child != -1 && !(
+        tncfg_tag_type(cfg, child) == 0 && 
+        !strcmp(tncfg_tag(cfg, child), name)
+    ));
+    return child;
+}
+tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name)
+{
+    tncfg_id child = tncfg_entity_reset(cfg, id);
+    if (child != -1 && !(
+        tncfg_tag_type(cfg, child) == 0 && 
+        !strcmp(tncfg_tag(cfg, child), name)
+    ))
+        tncfg_lookup_next(cfg, id, name);
+    return child;
+}
