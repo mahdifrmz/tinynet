@@ -6,6 +6,8 @@
         "mount.h": "c",
         "netlink.h": "c",
         "types.h": "c",
-        "assert.h": "c"
+        "assert.h": "c",
+        "addr.h": "c",
+        "link.h": "c"
     },
 }

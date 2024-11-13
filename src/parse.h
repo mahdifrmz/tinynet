@@ -38,8 +38,20 @@ typedef struct {
     size_t capacity;
 } tncfg;
 
-tncfg tncfg_parse(FILE *file);
 
+
+struct tncfg_comp {
+    const char *string;
+    int type;
+    int multiple;
+    int required;
+};
+
+typedef struct tncfg_comp tncfg_comp;
+
+#define  FOREACH_COMP(VAR, CONF, PARENT, TAG) for (tncfg_id VAR = tncfg_lookup_reset(CONF, PARENT, TAG); VAR != -1; VAR = tncfg_lookup_next(&cfg, PARENT, TAG))
+
+tncfg tncfg_parse(FILE *file);
 tncfg_id tncfg_root(tncfg *cfg);
 int tncfg_type(tncfg *cfg, tncfg_id id);
 double tncfg_get_decimal(tncfg *cfg, tncfg_id id);
@@ -52,5 +64,6 @@ char *tncfg_tag(tncfg *cfg, tncfg_id id);
 tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name);
 tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name);
 void tncfg_destroy(tncfg *tncfg);
+int tncfg_comp_verify(tncfg *cfg, tncfg_id id, tncfg_comp *comps, size_t comps_count);
 
 #endif

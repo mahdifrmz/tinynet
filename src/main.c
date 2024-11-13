@@ -573,6 +573,7 @@ enum {
     OP_LIST,
     OP_RUN,
     OP_SHOW,
+    OP_PARSE
 };
 
 typedef struct {
@@ -693,6 +694,56 @@ void cli_down(tn_args args)
     }
 }
 
+void config_traverse(tncfg *cfg, tncfg_id root, int depth)
+{
+    for(int i=0; i<depth; i++) {
+        printf("  ");
+    }
+    switch(tncfg_tag_type(cfg, root)) {
+        case TYPE_OPTION:
+            printf("+");
+            break;
+        case TYPE_ELEMENT:
+            printf("-");
+            break;
+        default:
+            printf("%s:", root == 0 ? "ROOT" : tncfg_tag(cfg, root));
+            break;
+    }
+    printf(" ");
+    switch(tncfg_type(cfg, root)) {
+        case TYPE_INTEGER:
+            printf("%ld\n", tncfg_get_integer(cfg, root));
+            break;
+        case TYPE_STRING:
+            printf("%s\n", tncfg_get_string(cfg, root));
+            break;
+        case TYPE_DECIMAL:
+            printf("%lf\n", tncfg_get_decimal(cfg, root));
+            break;
+        default:
+            printf("\n");
+            tncfg_id child = tncfg_entity_reset(cfg, root);
+            while(child != -1) {
+                config_traverse(cfg, child, depth + 1);
+                child = tncfg_entity_next(cfg, root);
+            }
+            break;
+    }
+}
+
+void cli_parse(tn_args args)
+{
+    FILE *f = fopen(args.path,"r");
+    if(!f) {
+        fprintf(stderr, "Failed to open config file\n");
+        exit(1);
+    }
+    tncfg cfg = tncfg_parse(f);
+    config_traverse(&cfg, tncfg_root(&cfg), 0);
+    tncfg_destroy(&cfg);
+}
+
 void cli_up(tn_args args)
 {
     tn_host_t *host;
@@ -756,8 +807,8 @@ void cli_up(tn_args args)
 void print_help()
 {
     printf(
-        "Usage: tomnet up <TOML file>\n"
-        "       tomnet <up|down|show> <sim>\n"
+        "Usage: tomnet <up|parse> <TOML file>\n"
+        "       tomnet <down|show> <sim>\n"
         "       tomnet run <sim> <host>\n"
         "       tomnet list\n"
         "\n"
@@ -777,60 +828,10 @@ int parse_op(const char *str) {
         return OP_LIST;
     if(!strcmp(str,"show"))
         return OP_SHOW;
+    if(!strcmp(str,"parse"))
+        return OP_PARSE;
     return OP_UNKNOWN;
 }
-
-void traverse(tncfg *cfg, tncfg_id root, int depth)
-{
-    for(int i=0; i<depth; i++) {
-        printf("  ");
-    }
-    switch(tncfg_tag_type(cfg, root)) {
-        case TYPE_OPTION:
-            printf("+");
-            break;
-        case TYPE_ELEMENT:
-            printf("-");
-            break;
-        default:
-            printf("%s:", tncfg_tag(cfg, root));
-            break;
-    }
-    printf(" ");
-    switch(tncfg_type(cfg, root)) {
-        case TYPE_INTEGER:
-            printf("%ld\n", tncfg_get_integer(cfg, root));
-            break;
-        case TYPE_STRING:
-            printf("%s\n", tncfg_get_string(cfg, root));
-            break;
-        case TYPE_DECIMAL:
-            printf("%lf\n", tncfg_get_decimal(cfg, root));
-            break;
-        default:
-            printf("\n");
-            tncfg_id child = tncfg_entity_reset(cfg, root);
-            while(child != -1) {
-                traverse(cfg, child, depth + 1);
-                child = tncfg_entity_next(cfg, root);
-            }
-            break;
-    }
-}
-
-struct tncfg_comp {
-    const char *string;
-    int type;
-    int multiple;
-    int required;
-};
-
-typedef struct tncfg_comp tncfg_comp;
-
-// option   string
-// property string
-// property integer
-// property entity
 
 tncfg_comp root_comps[] = {
     {.string = "host", .type=TYPE_ENTITY, .multiple=1, .required=1},
@@ -851,136 +852,10 @@ tncfg_comp peer_comps[] = {
     {.string = "if", .type=TYPE_STRING, .multiple=0, .required=0},
 };
 
-int tncfg_comp_verify(tncfg *cfg, tncfg_id id, tncfg_comp *comps, size_t comps_count)
-{
-    int seen[comps_count];
-    int failed = 0;
-    memset(seen,0,comps_count * sizeof(int));
-    tncfg_id child = tncfg_entity_reset(cfg, id);
-    while(child != -1) {
-        if (tncfg_tag_type(cfg, child) == TYPE_ELEMENT) {
-            fprintf(stderr, "Unexpected element\n");
-            failed = 1;
-        } else if (tncfg_tag_type(cfg, child) == TYPE_OPTION) {
-            if(tncfg_type(cfg, child) != TYPE_STRING)
-            {
-                fprintf(stderr, "Unknown option\n");
-                failed = 1;
-            }
-            int f = 1;
-            for(int i=0;i<comps_count;i++)
-            {
-                if(comps[i].type & TYPE_STRING && !strcmp(tncfg_get_string(cfg,child), comps[i].string)) {
-                    if(seen[i]) {
-                        fprintf(stderr, "Duplicate option\n");
-                    } else {
-                        seen[i] = 1;
-                        f = 0;
-                    }
-                    break;
-                }
-            }
-            failed |= f;
-            if(f) {
-                fprintf(stderr, "Unknown option\n");
-            }
-        } else {
-            if(tncfg_type(cfg, child) == TYPE_DECIMAL)
-            {
-                fprintf(stderr, "Invalid property\n");
-                failed = 1;
-            }
-            else if (tncfg_type(cfg, child) == TYPE_INTEGER)
-            {
-                int f = 1;
-                for(int i=0;i<comps_count;i++)
-                {
-                    if(comps[i].type & TYPE_INTEGER && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
-                        if(seen[i]) {
-                            fprintf(stderr, "Duplicate parameter\n");
-                        } else {
-                            seen[i] = 1;
-                            f = 0;
-                        }
-                        break;
-                    }
-                }
-                failed |= f;
-                if(f) {
-                    fprintf(stderr, "Unknown parameter\n");
-                }
-            }
-            else if (tncfg_type(cfg, child) == TYPE_STRING)
-            {
-                int f = 1;
-                for(int i=0;i<comps_count;i++)
-                {
-                    if(comps[i].type & TYPE_STRING && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
-                        if(seen[i] && !comps[i].multiple) {
-                            fprintf(stderr, "Duplicate property\n");
-                        } else {
-                            seen[i] = 1;
-                            f = 0;
-                        }
-                        break;
-                    }
-                }
-                failed |= f;
-                if(f) {
-                    fprintf(stderr, "Unknown property\n");
-                }
-            }
-            else if (tncfg_type(cfg, child) == TYPE_ENTITY)
-            {
-                int f = 1;
-                for(int i=0;i<comps_count;i++)
-                {
-                    if(comps[i].type & TYPE_ENTITY && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
-                        if(seen[i] && !comps[i].multiple) {
-                            fprintf(stderr, "Duplicate entity\n");
-                        } else {
-                            seen[i] = 1;
-                            f = 0;
-                        }
-                        break;
-                    }
-                }
-                failed |= f;
-                if(f) {
-                    fprintf(stderr, "Unknown entity\n");
-                }
-            }
-        }
-        child = tncfg_entity_next(cfg, id);
-    }
-    for(int i=0; i<comps_count; i++)
-    {
-        if(comps[i].required && !seen[i]) {
-            fprintf(stderr, "property %s is required", comps[i].string);
-            failed = 1;
-        }
-    }
-    return failed;
-}
-
-#define  FOREACH_COMP(VAR, CONF, PARENT, TAG) for (tncfg_id VAR = tncfg_lookup_reset(CONF, PARENT, TAG); VAR != -1; VAR = tncfg_lookup_next(&cfg, PARENT, TAG))
-
 int main(int argc, char **argv)
 {
     tn_args args;
     int option_index, c;
-
-    FILE *f = fopen(argv[1],"r");
-    tncfg cfg = tncfg_parse(f);
-    int iv = 0;
-    iv |= tncfg_comp_verify(&cfg, tncfg_root(&cfg), root_comps, sizeof(root_comps)/sizeof(*root_comps));
-    FOREACH_COMP(child, &cfg, tncfg_root(&cfg), "host") {
-        iv |= tncfg_comp_verify(&cfg, child, host_comps, sizeof(host_comps)/sizeof(*host_comps));
-    }
-
-    exit(iv);
-    tncfg_destroy(&cfg);
-    return 0;
 
     struct option long_options[] = {
       {"name",  required_argument, 0, 'n'},
@@ -1041,6 +916,9 @@ int main(int argc, char **argv)
     if(args.operation == OP_UP) {
         expect_arg("TOML file", path);
         cli_up(args);
+    } else if(args.operation == OP_PARSE) {
+        expect_arg("TOML file", path);
+        cli_parse(args);
     } else if(args.operation == OP_DOWN) {
         expect_arg("Simulation name", name);
         cli_down(args);

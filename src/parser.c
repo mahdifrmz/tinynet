@@ -425,3 +425,115 @@ tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name)
         tncfg_lookup_next(cfg, id, name);
     return child;
 }
+
+int tncfg_comp_verify(tncfg *cfg, tncfg_id id, tncfg_comp *comps, size_t comps_count)
+{
+    int seen[comps_count];
+    int failed = 0;
+    memset(seen,0,comps_count * sizeof(int));
+    tncfg_id child = tncfg_entity_reset(cfg, id);
+    while(child != -1) {
+        if (tncfg_tag_type(cfg, child) == TYPE_ELEMENT) {
+            fprintf(stderr, "Unexpected element\n");
+            failed = 1;
+        } else if (tncfg_tag_type(cfg, child) == TYPE_OPTION) {
+            if(tncfg_type(cfg, child) != TYPE_STRING)
+            {
+                fprintf(stderr, "Unknown option\n");
+                failed = 1;
+            }
+            int f = 1;
+            for(int i=0;i<comps_count;i++)
+            {
+                if(comps[i].type & TYPE_STRING && !strcmp(tncfg_get_string(cfg,child), comps[i].string)) {
+                    if(seen[i]) {
+                        fprintf(stderr, "Duplicate option\n");
+                    } else {
+                        seen[i] = 1;
+                        f = 0;
+                    }
+                    break;
+                }
+            }
+            failed |= f;
+            if(f) {
+                fprintf(stderr, "Unknown option\n");
+            }
+        } else {
+            if(tncfg_type(cfg, child) == TYPE_DECIMAL)
+            {
+                fprintf(stderr, "Invalid property\n");
+                failed = 1;
+            }
+            else if (tncfg_type(cfg, child) == TYPE_INTEGER)
+            {
+                int f = 1;
+                for(int i=0;i<comps_count;i++)
+                {
+                    if(comps[i].type & TYPE_INTEGER && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
+                        if(seen[i]) {
+                            fprintf(stderr, "Duplicate parameter\n");
+                        } else {
+                            seen[i] = 1;
+                            f = 0;
+                        }
+                        break;
+                    }
+                }
+                failed |= f;
+                if(f) {
+                    fprintf(stderr, "Unknown parameter\n");
+                }
+            }
+            else if (tncfg_type(cfg, child) == TYPE_STRING)
+            {
+                int f = 1;
+                for(int i=0;i<comps_count;i++)
+                {
+                    if(comps[i].type & TYPE_STRING && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
+                        if(seen[i] && !comps[i].multiple) {
+                            fprintf(stderr, "Duplicate property\n");
+                        } else {
+                            seen[i] = 1;
+                            f = 0;
+                        }
+                        break;
+                    }
+                }
+                failed |= f;
+                if(f) {
+                    fprintf(stderr, "Unknown property\n");
+                }
+            }
+            else if (tncfg_type(cfg, child) == TYPE_ENTITY)
+            {
+                int f = 1;
+                for(int i=0;i<comps_count;i++)
+                {
+                    if(comps[i].type & TYPE_ENTITY && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
+                        if(seen[i] && !comps[i].multiple) {
+                            fprintf(stderr, "Duplicate entity\n");
+                        } else {
+                            seen[i] = 1;
+                            f = 0;
+                        }
+                        break;
+                    }
+                }
+                failed |= f;
+                if(f) {
+                    fprintf(stderr, "Unknown entity\n");
+                }
+            }
+        }
+        child = tncfg_entity_next(cfg, id);
+    }
+    for(int i=0; i<comps_count; i++)
+    {
+        if(comps[i].required && !seen[i]) {
+            fprintf(stderr, "property %s is required", comps[i].string);
+            failed = 1;
+        }
+    }
+    return failed;
+}
