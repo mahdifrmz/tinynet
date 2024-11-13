@@ -49,7 +49,7 @@ struct tncfg_comp {
 
 typedef struct tncfg_comp tncfg_comp;
 
-#define  FOREACH_COMP(VAR, CONF, PARENT, TAG) for (tncfg_id VAR = tncfg_lookup_reset(CONF, PARENT, TAG); VAR != -1; VAR = tncfg_lookup_next(&cfg, PARENT, TAG))
+#define  FOREACH_COMP(VAR, CONF, PARENT, TAG) for (tncfg_id VAR = tncfg_lookup_reset(CONF, PARENT, TAG); VAR != -1; VAR = tncfg_lookup_next(CONF, PARENT, TAG))
 
 tncfg tncfg_parse(FILE *file);
 tncfg_id tncfg_root(tncfg *cfg);

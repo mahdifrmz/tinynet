@@ -33,6 +33,8 @@
 #define MAX_IF_NAME 15
 #define MAX_IF_NAME_STR "15"
 
+#define ARRAY_LEN(A) (sizeof(A)/sizeof(*A))
+
 typedef struct tn_intf_t tn_intf_t;
 typedef struct tn_host_t tn_host_t;
 typedef struct tn_db_t tn_db_t;
@@ -69,9 +71,29 @@ struct tn_db_t {
 };
 
 typedef struct {
+    tncfg *cfg;
     tn_db_t *db;
     tn_host_t *cur_host;
 } tn_parser_t;
+
+tncfg_comp root_comps[] = {
+    {.string = "host", .type=TYPE_ENTITY, .multiple=1, .required=1},
+};
+
+tncfg_comp host_comps[] = {
+    {.string = "name", .type=TYPE_STRING, .multiple=0, .required=1},
+    {.string = "if", .type=TYPE_ENTITY, .multiple=1, .required=0},
+};
+
+tncfg_comp intf_comps[] = {
+    {.string = "name", .type=TYPE_STRING, .multiple=0, .required=1},
+    {.string = "peer", .type=TYPE_ENTITY, .multiple=0, .required=0},
+};
+
+tncfg_comp peer_comps[] = {
+    {.string = "host", .type=TYPE_STRING, .multiple=0, .required=1},
+    {.string = "if", .type=TYPE_STRING, .multiple=0, .required=0},
+};
 
 tn_host_t *tn_lookup_host(tn_db_t *db, const char *name) {
     size_t idx;
@@ -236,11 +258,8 @@ void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
     }
 }
 
-void tn_parse_host(tn_parser_t *parser, toml_table_t *thost) {
-    toml_datum_t name = toml_string_in(thost, "name");
-    if(!name.ok) {
-        tn_parse_error(parser, "Host must have a name");
-    }
+void tn_parse_host(tn_parser_t *parser, tncfg_id ihost) {
+    tncfg_comp_verify(parser->cfg, ihost, host_comps, ARRAY_LEN(host_comps));
     if(strlen(name.u.s) > MAX_HOST_NAME)
     {
         tn_parse_error(parser, "Host name maximum length is " MAX_HOST_NAME_STR);
@@ -261,13 +280,10 @@ void tn_parse_host(tn_parser_t *parser, toml_table_t *thost) {
     parser->cur_host = NULL;
 }
 
-void tn_parse_root(tn_parser_t *parser, toml_table_t *root) {
-    toml_array_t *hosts = toml_array_in(root, "host");
-    if(!hosts)
-        return;
-    int host_count = toml_array_nelem(hosts);
-    for(int i=0; i<host_count; i++) {
-        toml_table_t *host = toml_table_at(hosts, i);
+void tn_parse_root(tn_parser_t *parser) {
+    tncfg_id root = tncfg_root(parser->cfg);
+    parser->db->is_valid &= !tncfg_comp_verify(parser->cfg, root, root_comps, ARRAY_LEN(root_comps));
+    FOREACH_COMP(host, parser->cfg, root, "host") {
         tn_parse_host(parser, host);
     }
 }
@@ -313,18 +329,13 @@ tn_db_t *tn_parse(const char *file_path) {
     tn_parser_t parser;
     parser.cur_host = NULL;
     parser.db = tn_db_new();
-    char errbuf[256];
-    memset(errbuf, 0, sizeof(errbuf));
     FILE *file = fopen(file_path, "rb");
     if(!file) {
         tn_parse_error(&parser, "failed to open file: %s\n", file_path);
     } else {
         parser.db->checksum = checksum(file);
-        toml_table_t *root = toml_parse_file(file, errbuf, sizeof(errbuf));
-        if(!root) {
-            tn_parse_error(&parser, "incorrect TOML format in file: %s\n%s\n", file_path, errbuf);
-        }
-        tn_parse_root(&parser, root);
+        tncfg cfg = tncfg_parse(file);
+        tn_parse_root(&parser, &cfg);
         if(parser.db->pre_peered_count) {
             tn_host_t *host;
             tn_intf_t *intf;
@@ -807,9 +818,9 @@ void cli_up(tn_args args)
 void print_help()
 {
     printf(
-        "Usage: tomnet <up|parse> <TOML file>\n"
-        "       tomnet <down|show> <sim>\n"
-        "       tomnet run <sim> <host>\n"
+        "Usage: tomnet <up|parse> CONFIG\n"
+        "       tomnet <down|show> SIM\n"
+        "       tomnet run SIM HOST CMD...\n"
         "       tomnet list\n"
         "\n"
         "   options:\n"
@@ -832,25 +843,6 @@ int parse_op(const char *str) {
         return OP_PARSE;
     return OP_UNKNOWN;
 }
-
-tncfg_comp root_comps[] = {
-    {.string = "host", .type=TYPE_ENTITY, .multiple=1, .required=1},
-};
-
-tncfg_comp host_comps[] = {
-    {.string = "name", .type=TYPE_STRING, .multiple=0, .required=1},
-    {.string = "if", .type=TYPE_ENTITY, .multiple=1, .required=0},
-};
-
-tncfg_comp intf_comps[] = {
-    {.string = "name", .type=TYPE_STRING, .multiple=0, .required=1},
-    {.string = "peer", .type=TYPE_ENTITY, .multiple=0, .required=0},
-};
-
-tncfg_comp peer_comps[] = {
-    {.string = "host", .type=TYPE_STRING, .multiple=0, .required=1},
-    {.string = "if", .type=TYPE_STRING, .multiple=0, .required=0},
-};
 
 int main(int argc, char **argv)
 {
