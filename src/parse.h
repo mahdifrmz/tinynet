@@ -49,21 +49,27 @@ struct tncfg_comp {
 
 typedef struct tncfg_comp tncfg_comp;
 
-#define  FOREACH_COMP(VAR, CONF, PARENT, TAG) for (tncfg_id VAR = tncfg_lookup_reset(CONF, PARENT, TAG); VAR != -1; VAR = tncfg_lookup_next(CONF, PARENT, TAG))
+#define FOREACH_COMP(VAR, CONF, PARENT, TAG, TYPE) for (tncfg_id VAR = tncfg_lookup_reset(CONF, PARENT, TAG, TYPE); VAR != -1; VAR = tncfg_lookup_next(CONF, PARENT, TAG, TYPE))
 
 tncfg tncfg_parse(FILE *file);
 tncfg_id tncfg_root(tncfg *cfg);
 int tncfg_type(tncfg *cfg, tncfg_id id);
-double tncfg_get_decimal(tncfg *cfg, tncfg_id id);
 tncfg_id tncfg_entity_reset(tncfg *cfg, tncfg_id id);
 tncfg_id tncfg_entity_next(tncfg *cfg, tncfg_id id);
-int64_t tncfg_get_integer(tncfg *cfg, tncfg_id id);
-const char *tncfg_get_string(tncfg *cfg, tncfg_id id);
 int tncfg_tag_type(tncfg *cfg, tncfg_id id);
 char *tncfg_tag(tncfg *cfg, tncfg_id id);
-tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name);
-tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name);
+tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name, int type);
+tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name, int type);
 void tncfg_destroy(tncfg *tncfg);
 int tncfg_comp_verify(tncfg *cfg, tncfg_id id, tncfg_comp *comps, size_t comps_count);
+
+char *tncfg_get_string(tncfg *cfg, tncfg_id id, const char *name);
+int tncfg_get_int(tncfg *cfg, tncfg_id id, const char *name, int64_t *value);
+int tncfg_get_decimal(tncfg *cfg, tncfg_id id, const char *name, double *value);
+tncfg_id tncfg_get_entity(tncfg *cfg, tncfg_id id, const char *name);
+
+int64_t tncfg_value_integer(tncfg *cfg, tncfg_id id);
+double tncfg_value_decimal(tncfg *cfg, tncfg_id id);
+char *tncfg_value_string(tncfg *cfg, tncfg_id id);
 
 #endif

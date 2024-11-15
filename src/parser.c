@@ -343,9 +343,7 @@ tncfg tncfg_parse(FILE *file) {
     nextToken(&parser);  // Initialize first token
     parseDOC(&parser);   // Start parsing from DOC rule
 
-    if (parser.currentToken.type == TOK_EOF) {
-        printf("Parsing completed successfully.\n");
-    } else {
+    if (parser.currentToken.type != TOK_EOF) {
         fprintf(stderr, "Error at line %d, column %d: unexpected token at end of input\n",
                 parser.currentToken.line, parser.currentToken.column);
     }
@@ -360,19 +358,15 @@ tncfg_id tncfg_root(tncfg *cfg)
 }
 int tncfg_type(tncfg *cfg, tncfg_id id)
 {
-    return cfg->data[id].type & 0xff;
+    return cfg->data[id].type & 0x0000000f;
 }
 int tncfg_tag_type(tncfg *cfg, tncfg_id id)
 {
-    return cfg->data[id].type & 0xffffff00;
+    return cfg->data[id].type & 0xfffffff0;
 }
 char *tncfg_tag(tncfg *cfg, tncfg_id id)
 {
     return cfg->data[id].tag;
-}
-double tncfg_get_decimal(tncfg *cfg, tncfg_id id)
-{
-    return cfg->data[id].data.decimal;
 }
 tncfg_id tncfg_entity_reset(tncfg *cfg, tncfg_id id)
 {
@@ -396,33 +390,42 @@ tncfg_id tncfg_entity_next(tncfg *cfg, tncfg_id id)
         return -1;
     return cfg->data[id].data.entity.ptr;
 }
-int64_t tncfg_get_integer(tncfg *cfg, tncfg_id id)
+int64_t tncfg_value_integer(tncfg *cfg, tncfg_id id)
 {
     return cfg->data[id].data.integer;
 }
-const char *tncfg_get_string(tncfg *cfg, tncfg_id id)
+double tncfg_value_decimal(tncfg *cfg, tncfg_id id)
+{
+    return cfg->data[id].data.decimal;
+}
+char *tncfg_value_string(tncfg *cfg, tncfg_id id)
 {
     return cfg->data[id].data.string;
 }
-tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name)
+tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name, int type)
 {
     tncfg_id child;
     do {
         child = tncfg_entity_next(cfg, id);
     } while (child != -1 && !(
+        tncfg_type(cfg, child) == type && 
         tncfg_tag_type(cfg, child) == 0 && 
         !strcmp(tncfg_tag(cfg, child), name)
     ));
     return child;
 }
-tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name)
+tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name, int type)
 {
     tncfg_id child = tncfg_entity_reset(cfg, id);
-    if (child != -1 && !(
-        tncfg_tag_type(cfg, child) == 0 && 
+    if(child == -1) {
+        return -1;
+    }
+    while (child != -1 && !(
+        tncfg_type(cfg, child) == type && 
+        tncfg_tag_type(cfg, child) == 0 &&
         !strcmp(tncfg_tag(cfg, child), name)
     ))
-        tncfg_lookup_next(cfg, id, name);
+        child = tncfg_entity_next(cfg, id);
     return child;
 }
 
@@ -445,7 +448,7 @@ int tncfg_comp_verify(tncfg *cfg, tncfg_id id, tncfg_comp *comps, size_t comps_c
             int f = 1;
             for(int i=0;i<comps_count;i++)
             {
-                if(comps[i].type & TYPE_STRING && !strcmp(tncfg_get_string(cfg,child), comps[i].string)) {
+                if(comps[i].type & TYPE_STRING && !strcmp(tncfg_value_string(cfg,child), comps[i].string)) {
                     if(seen[i]) {
                         fprintf(stderr, "Duplicate option\n");
                     } else {
@@ -531,9 +534,46 @@ int tncfg_comp_verify(tncfg *cfg, tncfg_id id, tncfg_comp *comps, size_t comps_c
     for(int i=0; i<comps_count; i++)
     {
         if(comps[i].required && !seen[i]) {
-            fprintf(stderr, "property %s is required", comps[i].string);
+            fprintf(stderr, "property %s is required\n", comps[i].string);
             failed = 1;
         }
     }
     return failed;
+}
+
+char *tncfg_get_string(tncfg *cfg, tncfg_id id, const char *name)
+{
+    tncfg_id child;
+    child = tncfg_lookup_reset(cfg, id, name, TYPE_STRING);
+    if (child != -1) {
+        return cfg->data[child].data.string;
+    } else {
+        return ((char*)"");
+    }
+}
+int tncfg_get_int(tncfg *cfg, tncfg_id id, const char *name, int64_t *value)
+{
+    tncfg_id child;
+    child = tncfg_lookup_reset(cfg, id, name, TYPE_INTEGER);
+    if (child != -1) {
+        *value = cfg->data[child].data.integer;
+        return 1;
+    } else {
+        return 0;
+    }
+}
+int tncfg_get_decimal(tncfg *cfg, tncfg_id id, const char *name, double *value)
+{
+    tncfg_id child;
+    child = tncfg_lookup_reset(cfg, id, name, TYPE_DECIMAL);
+    if (child != -1) {
+        *value = cfg->data[child].data.decimal;
+        return 1;
+    } else {
+        return 0;
+    }
+}
+tncfg_id tncfg_get_entity(tncfg *cfg, tncfg_id id, const char *name)
+{
+    return tncfg_lookup_reset(cfg, id, name, TYPE_ENTITY);
 }

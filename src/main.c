@@ -88,11 +88,12 @@ tncfg_comp host_comps[] = {
 tncfg_comp intf_comps[] = {
     {.string = "name", .type=TYPE_STRING, .multiple=0, .required=1},
     {.string = "peer", .type=TYPE_ENTITY, .multiple=0, .required=0},
+    {.string = "ip", .type=TYPE_STRING, .multiple=0, .required=0},
 };
 
 tncfg_comp peer_comps[] = {
     {.string = "host", .type=TYPE_STRING, .multiple=0, .required=1},
-    {.string = "if", .type=TYPE_STRING, .multiple=0, .required=0},
+    {.string = "if", .type=TYPE_STRING, .multiple=0, .required=1},
 };
 
 tn_host_t *tn_lookup_host(tn_db_t *db, const char *name) {
@@ -131,7 +132,6 @@ tn_host_t *tn_add_host(tn_db_t *db, const char *name) {
         host->name = strdup(name);
         host->is_switch = 0;
         host->intfs_ll = NULL;
-        host->created_for = NULL;
         host->is_valid = !lookup && name[0];
         host->db = db;
         ll_bpush(db->hosts_ll, host);
@@ -150,7 +150,6 @@ tn_intf_t *tn_add_intf(tn_db_t *db, tn_host_t* host, const char *name) {
         intf = malloc(sizeof(tn_intf_t));
         intf->name = strdup(name);
         intf->host = host;
-        intf->created_for = NULL;
         intf->is_valid = !lookup && name[0];
         intf->ip = NULL;
         intf->link = NULL;
@@ -220,20 +219,19 @@ struct tn_intf_t *tn_lookup_intf_ip(tn_host_t *host, struct nl_addr *addr)
     }
     return NULL;
 }
-void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
+void tn_parse_intf(tn_parser_t *parser, tncfg_id iintf) {
     int err;
-    toml_datum_t name = toml_string_in(tintf, "name");
-    if(!name.ok || !name.u.s[0]) {
-        tn_parse_error(parser, "Interface must have a name");
-    }
-    tn_intf_t *intf = tn_add_intf(parser->db, parser->cur_host, name.ok ? name.u.s : "");
-    if(!intf->is_valid) {
+    char *name;
+    parser->db->is_valid &= !tncfg_comp_verify(parser->cfg, iintf, intf_comps, ARRAY_LEN(intf_comps));
+    name = tncfg_get_string(parser->cfg, iintf, "name");
+    tn_intf_t *intf = tn_add_intf(parser->db, parser->cur_host, name);
+    if(name[0] && !intf->is_valid) {
         tn_parse_error(parser, "Interface name must be unique");
     }
-    toml_datum_t ip = toml_string_in(tintf, "ip");
-    if(ip.ok) {
+    char *ip = tncfg_get_string(parser->cfg, iintf, "ip");
+    if(ip[0]) {
         struct nl_addr *addr;
-        if ((err = nl_addr_parse(ip.u.s, AF_INET, &addr)) < 0) {
+        if ((err = nl_addr_parse(ip, AF_INET, &addr)) < 0) {
             tn_parse_error(parser, "Invalid IP format");
         } else if (tn_lookup_intf_ip(parser->cur_host, addr)) {
             tn_parse_error(parser, "IP already set on another interface");
@@ -241,41 +239,40 @@ void tn_parse_intf(tn_parser_t *parser, toml_table_t *tintf) {
             intf->ip = addr;
         }
     }
-    toml_datum_t link = toml_string_in(tintf, "peer");
-    if(link.ok && link.u.s[0]) {
-        toml_datum_t link_if = toml_string_in(tintf, "peer-if");
-        if(!link_if.ok || !link_if.u.s[0]) {
-            tn_parse_error(parser, "Peer interface must be specified");
-        } else {
+    tncfg_id peer = tncfg_get_entity(parser->cfg, iintf, "peer");
+    if(peer != -1) {
+        int valid = !tncfg_comp_verify(parser->cfg, peer, peer_comps, ARRAY_LEN(peer_comps));
+        parser->db->is_valid &= valid;
+        if(valid) {
+            char *peer_host = tncfg_get_string(parser->cfg, peer, "host");
+            char *peer_intf = tncfg_get_string(parser->cfg, peer, "if");
             if(intf->link) {
-                if(strcmp(intf->link->host->name, link.u.s) || strcmp(intf->link->name, link_if.u.s)) {
+                if(strcmp(intf->link->host->name, peer_host) || strcmp(intf->link->name, peer_intf)) {
                     tn_parse_error(parser, "Interface already linked to another interface");
                 }
             } else {
-                tn_db_link(parser->db, intf, link.u.s, link_if.u.s);
+                tn_db_link(parser->db, intf, peer_host, peer_intf);
             }
         }
     }
 }
 
 void tn_parse_host(tn_parser_t *parser, tncfg_id ihost) {
-    tncfg_comp_verify(parser->cfg, ihost, host_comps, ARRAY_LEN(host_comps));
-    if(strlen(name.u.s) > MAX_HOST_NAME)
+    parser->db->is_valid &= !tncfg_comp_verify(parser->cfg, ihost, host_comps, ARRAY_LEN(host_comps));
+    char *name = tncfg_get_string(parser->cfg, ihost, "name");
+    if(name[0] && strlen(name) > MAX_HOST_NAME)
     {
+        parser->db->is_valid = 0;
         tn_parse_error(parser, "Host name maximum length is " MAX_HOST_NAME_STR);
     }
-    tn_host_t *host = tn_add_host(parser->db, name.u.s);
-    if(!host->is_valid) {
+    tn_host_t *host = tn_add_host(parser->db, name);
+    if(name[0] && !host->is_valid) {
+        parser->db->is_valid = 0;
         tn_parse_error(parser, "Host name must be unique");
     }
     parser->cur_host = host;
-    toml_array_t *intfs = toml_array_in(thost, "if");
-    if(intfs) {
-        int intfs_count = toml_array_nelem(intfs);
-        for(int i=0; i<intfs_count; i++) {
-            toml_table_t *tintf = toml_table_at(intfs, i);
-            tn_parse_intf(parser, tintf);
-        }
+    FOREACH_COMP(intf, parser->cfg, ihost, "if", TYPE_ENTITY) {
+        tn_parse_intf(parser, intf);
     }
     parser->cur_host = NULL;
 }
@@ -283,7 +280,7 @@ void tn_parse_host(tn_parser_t *parser, tncfg_id ihost) {
 void tn_parse_root(tn_parser_t *parser) {
     tncfg_id root = tncfg_root(parser->cfg);
     parser->db->is_valid &= !tncfg_comp_verify(parser->cfg, root, root_comps, ARRAY_LEN(root_comps));
-    FOREACH_COMP(host, parser->cfg, root, "host") {
+    FOREACH_COMP(host, parser->cfg, root, "host", TYPE_ENTITY) {
         tn_parse_host(parser, host);
     }
 }
@@ -331,21 +328,24 @@ tn_db_t *tn_parse(const char *file_path) {
     parser.db = tn_db_new();
     FILE *file = fopen(file_path, "rb");
     if(!file) {
-        tn_parse_error(&parser, "failed to open file: %s\n", file_path);
+        tn_parse_error(&parser, "failed to open file: %s", file_path);
     } else {
         parser.db->checksum = checksum(file);
         tncfg cfg = tncfg_parse(file);
-        tn_parse_root(&parser, &cfg);
+        parser.cfg = &cfg;
+        tn_parse_root(&parser);
         if(parser.db->pre_peered_count) {
             tn_host_t *host;
             tn_intf_t *intf;
             size_t _i, _j;
             ll_foreach(parser.db->hosts_ll, host, _j) {
                 if(host->created_for) {
-                    tn_parse_error(&parser, "Host %s refered to as peer, but not created explicitly\n", host->name);
+                    tn_parse_error(&parser, "Host %s refered to as peer, but not created explicitly", host->name);
                 }
                 ll_foreach(host->intfs_ll, intf, _i) {
-                    tn_parse_error(&parser, "Interface %s/%s refered to as peer interface, but not created explicitly\n", host->name, intf->name);
+                    if (intf->created_for) {
+                        tn_parse_error(&parser, "Interface %s/%s refered to as peer interface, but not created explicitly", host->name, intf->name);
+                    }
                 }    
             }
             parser.db->is_valid = 0;
@@ -504,6 +504,7 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
         rtnl_link_set_name(dev, intf->name);
         rtnl_link_set_name(pdev, peer->name);
         // set netns
+        printf("%s/%s -> %s/%s\n", intf->host->name, intf->name, peer->host->name, peer->name);
         nsfile = tn_host_ns_file(intf->host);
         pnsfile = tn_host_ns_file(peer->host);
         rtnl_link_set_ns_fd(dev, fileno(nsfile));
@@ -527,8 +528,8 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
         nsfile = tn_host_ns_file(intf->host);
         rtnl_link_set_ns_fd(dev, fileno(nsfile));
         // send req
-        if (rtnl_link_add(nlsock, dev, NLM_F_CREATE)) {
-            printf("can't create interface");
+        if ((err = rtnl_link_add(nlsock, dev, NLM_F_CREATE)) < 0) {
+            fprintf(stderr, "can't create interface: %s\n", nl_geterror(err));
             exit(1);
         }
         // clean up
@@ -724,13 +725,13 @@ void config_traverse(tncfg *cfg, tncfg_id root, int depth)
     printf(" ");
     switch(tncfg_type(cfg, root)) {
         case TYPE_INTEGER:
-            printf("%ld\n", tncfg_get_integer(cfg, root));
+            printf("%ld\n", tncfg_value_integer(cfg, root));
             break;
         case TYPE_STRING:
-            printf("%s\n", tncfg_get_string(cfg, root));
+            printf("%s\n", tncfg_value_string(cfg, root));
             break;
         case TYPE_DECIMAL:
-            printf("%lf\n", tncfg_get_decimal(cfg, root));
+            printf("%lf\n", tncfg_value_decimal(cfg, root));
             break;
         default:
             printf("\n");
