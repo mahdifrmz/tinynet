@@ -504,7 +504,6 @@ void tn_create_intf(tn_intf_t *intf, struct nl_sock *nlsock)
         rtnl_link_set_name(dev, intf->name);
         rtnl_link_set_name(pdev, peer->name);
         // set netns
-        printf("%s/%s -> %s/%s\n", intf->host->name, intf->name, peer->host->name, peer->name);
         nsfile = tn_host_ns_file(intf->host);
         pnsfile = tn_host_ns_file(peer->host);
         rtnl_link_set_ns_fd(dev, fileno(nsfile));
