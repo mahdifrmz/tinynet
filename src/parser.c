@@ -123,6 +123,7 @@ int peek(Parser *parser) {
 Token nextToken(Parser *parser) {
     int c;
     Token token;
+    token.text = NULL;
 
     // Skip whitespace except for newline
     while (isspace((c = peek(parser))) && c != '\n') {
@@ -135,35 +136,6 @@ Token nextToken(Parser *parser) {
     if (c == EOF) {
         token.type = TOK_EOF;
         token.text = NULL;
-    }
-    else if (isalpha(c) || c == '_') {
-        // Parse identifier
-        pushChar(parser, c);
-        while (isalnum(c = peek(parser)) || c == '_') {
-            pushChar(parser, c);
-            advance(parser);
-        }
-        pushChar(parser, '\0');
-        token.type = TOK_IDENT;
-        token.text = parser->sbuf;
-        parser->sbuf = NULL;
-    } else if (isdigit(c)) {
-        // Parse integer or decimal number
-        if (c == '-') {
-            pushChar(parser, c);
-            c = advance(parser);
-        }
-        pushChar(parser, c);
-        int hasDecimal = 0;
-        while (isdigit(c = peek(parser)) || (c == '.' && !hasDecimal)) {
-            if (c == '.') hasDecimal = 1;  // Allow only one decimal point
-            pushChar(parser, c);
-            advance(parser);
-        }
-        pushChar(parser, '\0');
-        token.type = hasDecimal ? TOK_DECIMAL : TOK_INTEGER;
-        token.text = parser->sbuf;
-        parser->sbuf = NULL;
     } else if (c == '"') {
         // Parse string with escape sequences
         while ((c = advance(parser)) != '"' && c != EOF) {
@@ -193,18 +165,56 @@ Token nextToken(Parser *parser) {
         token.text = parser->sbuf;
         parser->sbuf = NULL;
     } else {
-        // Parse single-character tokens
-        token.text = NULL;
-        switch (c) {
-            case '+': token.type = TOK_PLUS; break;
-            case '-': token.type = TOK_MINUS; break;
-            case '{': token.type = TOK_LBRACE; break;
-            case '}': token.type = TOK_RBRACE; break;
-            case '\n': token.type = TOK_ENDL; break;
-            default: token.type = TOK_UNKNOWN; break;
+        char *end, p;
+        int is_ident, len;
+        pushChar(parser,c);
+        if (c != '\n') {
+            while (!isspace(( p = peek(parser))) && p != EOF) {
+                pushChar(parser, advance(parser));
+            }
         }
+        pushChar(parser, '\0');
+        len = parser->slen - 1;
+        if(len == 1) {
+            // Parse single-character tokens
+            switch (c) {
+                case '+': token.type = TOK_PLUS; goto next_token_end;
+                case '-': token.type = TOK_MINUS; goto next_token_end;
+                case '{': token.type = TOK_LBRACE; goto next_token_end;
+                case '}': token.type = TOK_RBRACE; goto next_token_end;
+                case '\n': token.type = TOK_ENDL; goto next_token_end;
+                default: break;
+            }
+        }
+        token.text = parser->sbuf;
+        parser->sbuf = NULL;
+        strtol(token.text, &end, 10);
+        if(end == token.text + len) {
+            token.type = TOK_INTEGER;
+            goto next_token_end;
+        }
+        strtod(token.text, &end);
+        if(end == token.text + len) {
+            token.type = TOK_DECIMAL;
+            goto next_token_end;
+        }
+        if(isalpha(token.text[0])) {
+            is_ident = 1;
+            for(size_t i=0;i<len;i++) {
+                if(!isalnum(token.text[i]) && '-' != token.text[i]) {
+                    is_ident = 0;
+                }
+            }
+            if(is_ident) {
+                token.type = TOK_IDENT;
+                goto next_token_end;
+            }
+        }
+        token.type = TOK_STRING;
     }
+next_token_end:
     parser->currentToken = token;
+    parser->slen = 0;
     return token;
 }
 
