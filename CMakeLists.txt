@@ -6,6 +6,7 @@ add_executable(${PROJECT_NAME}
     src/crc32.c
     src/main.c
     src/parser.c
+    src/vm.c
     toml/toml.c
 )
 

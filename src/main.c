@@ -22,6 +22,7 @@
 #include <netlink/route/link/veth.h>
 #include <assert.h>
 #include "ll.h"
+#include "vm.c"
 #include "parse.h"
 
 #define NETNS_MOUNT_DIR "/run/tomnet/sim"

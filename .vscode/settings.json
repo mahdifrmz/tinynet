@@ -8,6 +8,7 @@
         "types.h": "c",
         "assert.h": "c",
         "addr.h": "c",
-        "link.h": "c"
+        "link.h": "c",
+        "veth.h": "c"
     },
 }
