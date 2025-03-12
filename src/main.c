@@ -22,8 +22,8 @@
 #include <netlink/route/link/veth.h>
 #include <assert.h>
 #include "ll.h"
-#include "vm.c"
 #include "parse.h"
+#include "vm.h"
 
 #define NETNS_MOUNT_DIR "/run/tomnet/sim"
 #define LOCKFILE_PATH "/run/tomnet/lock"

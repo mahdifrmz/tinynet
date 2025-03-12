@@ -2,6 +2,8 @@
 #include "vec.h"
 #include "vm.h"
 
+tn_entity** tn_entities;
+
 void tn_vm_opcode_set_attr(tn_vm *vm, tn_vm_bytecode bc) {
     tn_vm_value val;
     tn_vm_value parent;
@@ -13,7 +15,7 @@ void tn_vm_opcode_set_attr(tn_vm *vm, tn_vm_bytecode bc) {
         tn_entity_attribute *own_attr;
         if(ent->validator) {
             if(!ent->validator(val.as.entity)) {
-                // TODO: throw errow
+                // TODO: throw error
             }
         }
         if(attr.name_unicity && val.as.entity->name) {
@@ -27,11 +29,11 @@ void tn_vm_opcode_set_attr(tn_vm *vm, tn_vm_bytecode bc) {
     }
     if(attr.validator) {
         if(!attr.validator(parent.as.entity, val)) {
-            // TODO: throw errow
+            // TODO: throw error
         }
     }
     if((1 << attr.index) & val.as.entity->flags) {
-        // TODO: throw error: attribute already set
+        // TODO: throw error: attribute already set*
     }
     if(attr.is_name) {
         val.as.entity->name = val.as.string;
@@ -71,10 +73,30 @@ void tn_vm_run(tn_vm *vm)
         }
     }
 }
-typedef struct tn_object_host_t
+
+uint32_t tn_vm_add_constant(tn_vm *vm, tn_vm_value val)
+{
+    vec_push(vm->constants_v, val);
+    return vec_len(vm->constants_v) - 1;
+}
+
+tn_vm *tn_vm_init()
+{
+    tn_vm *vm = malloc(sizeof(tn_vm));
+    vm->constants_v = NULL;
+    vm->stack_v = NULL;
+    vm->prog_v = NULL;
+    vm->prog_counter = 0;
+    return vm;
+}
+
+typedef struct tn_xhost_t
 {
     tn_vm_entity_header header;
     const char *name;
-} tn_object_host;
-TN_REGISTER_ENTITY(tn_object_host);
-TN_REGISTER_ATTRIBUTE(tn_object_host, name, TN_VM_TYPE_STRING, string, TN_ATTR_FLAG_MANDATORY | TN_ATTR_FLAG_NAME_UNICITY);
+} tn_xhost;
+TN_REGISTER_ENTITY(tn_xhost);
+TN_REGISTER_ATTRIBUTE(tn_xhost, name, TN_VM_TYPE_STRING, string, TN_ATTR_FLAG_MANDATORY | TN_ATTR_FLAG_NAME_UNICITY)
+{
+    ((tn_xhost*)ent)->name = val.as.string;
+}

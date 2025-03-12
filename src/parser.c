@@ -2,32 +2,8 @@
 #include <string.h>
 #include <ctype.h>
 #include "parse.h"
-
-void tncfg_init(tncfg *tncfg) {
-    tncfg->size = 0;
-    tncfg->capacity = 16;
-    tncfg->data = malloc(tncfg->capacity * sizeof(value_t));
-}
-
-void tncfg_add(tncfg *tncfg, value_t element) {
-    if (tncfg->size == tncfg->capacity) {
-        tncfg->capacity *= 2;
-        tncfg->data = realloc(tncfg->data, tncfg->capacity * sizeof(value_t));
-    }
-    tncfg->data[tncfg->size++] = element;
-}
-
-void tncfg_destroy(tncfg *tncfg) {
-    for(tncfg_id i = 0; i < tncfg->size; i++)
-    {
-        value_t v = tncfg->data[i];
-        free(v.tag);
-        if (v.type & TYPE_STRING) {
-            free(v.data.string);
-        }
-    }
-    free(tncfg->data);
-}
+#include "vm.h"
+#include "vec.h"
 
 typedef enum {
     TOK_IDENT,
@@ -35,7 +11,6 @@ typedef enum {
     TOK_INTEGER,
     TOK_DECIMAL,
     TOK_PLUS,
-    TOK_MINUS,
     TOK_LBRACE,
     TOK_RBRACE,
     TOK_ENDL,
@@ -53,7 +28,7 @@ typedef struct {
 typedef struct {
     Token currentToken;
     FILE *inputFile;
-    tncfg cfg;
+    tn_vm *vm;
     int line;
     int column;
     int buffer;
@@ -84,7 +59,7 @@ void initParser(Parser *parser, FILE *inputFile) {
     parser->column = 0;
     parser->buffer = -2;
     parser->sbuf = NULL;
-    tncfg_init(&parser->cfg);
+    parser->vm = tn_vm_init();
 }
 
 // Helper function to advance the character position
@@ -179,7 +154,6 @@ Token nextToken(Parser *parser) {
             // Parse single-character tokens
             switch (c) {
                 case '+': token.type = TOK_PLUS; goto next_token_end;
-                case '-': token.type = TOK_MINUS; goto next_token_end;
                 case '{': token.type = TOK_LBRACE; goto next_token_end;
                 case '}': token.type = TOK_RBRACE; goto next_token_end;
                 case '\n': token.type = TOK_ENDL; goto next_token_end;
@@ -198,7 +172,7 @@ Token nextToken(Parser *parser) {
             token.type = TOK_DECIMAL;
             goto next_token_end;
         }
-        if(isalpha(token.text[0])) {
+        if(isalpha(token.text[0]) || token.text[0] == '-') {
             is_ident = 1;
             for(size_t i=0;i<len;i++) {
                 if(!isalnum(token.text[i]) && '-' != token.text[i]) {
@@ -230,110 +204,177 @@ void expect(Parser *parser, TokenType expectedType) {
 
 // Forward declarations for recursive parsing functions
 void parseDOC(Parser *parser);
-void parseBODY(Parser *parser);
-void parseENTITY(Parser *parser, char *name, char *tag, int type);
-void parseCOMP(Parser *parser);
+void parseBODY(Parser *parser, tn_entity *ent);
+void parseENTITY(Parser *parser, tn_entity *ent,  char *name);
+void parseCOMP(Parser *parser, tn_entity *ent);
 
 // DOC := BODY
 void parseDOC(Parser *parser) {
-    value_t val;
-    val.tag = NULL;
-    val.type = TYPE_ENTITY;
-    tncfg_add(&parser->cfg, val);
-    tncfg_id last = parser->cfg.size - 1;
-    parser->cfg.data[last].data.entity.from = parser->cfg.size;
-    parseBODY(parser);
-    parser->cfg.data[last].data.entity.to = parser->cfg.size;
+    // parse the root entity
+    parseBODY(parser, tn_entities[0]);
 }
 
 // ENTITY := [ IDENT | STRING ] '{' BODY '}'
-void parseENTITY(Parser *parser, char *name, char *tag, int type) {
-    expect(parser, TOK_LBRACE);
-    value_t val;
-    val.tag = tag;
-    val.type = TYPE_ENTITY | type;
-    tncfg_add(&parser->cfg, val);
-    tncfg_id last = parser->cfg.size - 1;
-    parser->cfg.data[last].data.entity.from = parser->cfg.size;
+void parseENTITY(Parser *parser, tn_entity *ent,  char *name) {
+    uint32_t line, column;
+    tn_vm_bytecode bc;
+    line = parser->currentToken.line;
+    column = parser->currentToken.column;
+    bc.opcode = TN_VM_OPCODE_CREATE_ENTITY;
+    bc.arg = ent->index;
+    bc.line = line;
+    bc.column = column;
+    vec_push(parser->vm->prog_v, bc);
     if (name) {
-        value_t val;
-        val.tag = strdup("name");
-        val.type = TYPE_STRING;
-        val.data.string = name;
-        tncfg_add(&parser->cfg, val);
+        tn_entity_attribute *attr;
+        vec_foreach(attr, ent->attrs_v) {
+            if(!strcmp(attr->name,"name")) {
+                break;
+            }
+        }
+        if(attr == vec_end(ent->attrs_v)) {
+            // TODO: error
+        } else {
+            tn_vm_value val;
+            val.type = TN_VM_TYPE_STRING;
+            val.as.string = name;
+            pushInstructions(parser, attr, val);
+        }
     }
-    parseBODY(parser);
-    parser->cfg.data[last].data.entity.to = parser->cfg.size;
+    expect(parser, TOK_LBRACE);
+    parseBODY(parser,ent);
     expect(parser, TOK_RBRACE);
 }
 
 // BODY := COMP*
-void parseBODY(Parser *parser) {
+void parseBODY(Parser *parser, tn_entity *ent) {
     while ( parser->currentToken.type == TOK_IDENT ||
             parser->currentToken.type == TOK_PLUS ||
-            parser->currentToken.type == TOK_MINUS ||
             parser->currentToken.type == TOK_ENDL )
     {
-        parseCOMP(parser);
+        parseCOMP(parser, ent);
     }
 }
 
-// COMP := <IDENT|'+'|'-'> <IDENT|STRING|NUMBER|ENTITY> ENDL
-void parseCOMP(Parser *parser) {
+void parseOpt(Parser *parser, tn_entity *ent)
+{
+    nextToken(parser);
+    if(parser->currentToken.type != TOK_IDENT) {
+        expect(parser,TOK_IDENT);
+    }
+    tn_entity_option *opt;
+    int idx = -1;
+    vec_foreach(opt, ent->options_v) {
+        if(!strcmp(opt->name, parser->currentToken.text)) {
+            idx = opt->index;
+            break;
+        }
+    }
+    if(idx == -1) {
+        // TODO: err
+    } else {
+        tn_vm_bytecode bc;
+        bc.opcode = TN_VM_OPCODE_SET_OPTION;
+        bc.arg = idx;
+        bc.line = parser->currentToken.line;
+        bc.column = parser->currentToken.column;
+        vec_push(parser->vm->prog_v, bc);
+    }
+}
+
+void pushInstructions(Parser *parser, tn_entity_attribute *attr, tn_vm_value val)
+{
+    tn_vm_bytecode bc;
+    // push the CONST instruction
+    bc.opcode = TN_VM_OPCODE_CONSTANT;
+    bc.arg = tn_vm_add_constant(parser->vm, val);
+    bc.line = parser->currentToken.line;
+    bc.column = parser->currentToken.column;
+    vec_push(parser->vm->prog_v, bc);
+    // push the SET instruction
+    bc.opcode = TN_VM_OPCODE_SET_ATTRIBUTE;
+    bc.arg = attr->index;
+    bc.line = parser->currentToken.line;
+    bc.column = parser->currentToken.column;
+    vec_push(parser->vm->prog_v, bc);
+}
+
+void parseAttr(Parser *parser, tn_entity *ent)
+{
+    const char *attr_name = parser->currentToken.text;
+    nextToken(parser);
+    tn_entity *child;
+    tn_entity_attribute *attr;
+    tn_vm_value val;
+    tn_vm_bytecode bc;
+    vec_foreach(attr, ent->attrs_v) {
+        if(!strcmp(attr->name, attr_name)) {
+            break;
+        }
+    }
+    if(attr == vec_end(ent->attrs_v)) {
+        // TODO: error
+    }
+    else if(attr->type == TN_VM_TYPE_STRING) {
+        if(parser->currentToken.type != TOK_IDENT && parser->currentToken.type != TOK_STRING){
+            expect(parser, TOK_STRING);
+        }
+        val.type = TN_VM_TYPE_STRING;
+        val.as.string = parser->currentToken.text;
+        nextToken(parser);
+    } else if(attr->type == TN_VM_TYPE_INTEGER) {
+        if(parser->currentToken.type != TOK_INTEGER){
+            expect(parser, TOK_INTEGER);
+        }
+        val.type = TN_VM_TYPE_INTEGER;
+        val.as.integer = atoi(parser->currentToken.text);
+        free(parser->currentToken.text);
+        nextToken(parser);
+        pushInstructions(parser, attr, val);
+    } else if(attr->type == TN_VM_TYPE_DECIMAL) {
+        if(parser->currentToken.type != TOK_DECIMAL){
+            expect(parser, TOK_DECIMAL);
+        }
+        val.type = TN_VM_TYPE_DECIMAL;
+        val.as.decimal = atoi(parser->currentToken.text);
+        free(parser->currentToken.text);
+        nextToken(parser);
+        pushInstructions(parser, attr, val);
+    } else if (attr->type == TN_VM_TYPE_ENTITY) {
+        const char *name = NULL;
+        if(parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING){
+            name = parser->currentToken.text;
+            nextToken(parser);
+        }
+        vec_foreach(child,tn_entities) {
+            if(!strcmp(child,attr->name)) {
+                break;
+            }
+        }
+        parseENTITY(parser,child,name);
+        // push the SET instruction
+        bc.opcode = TN_VM_OPCODE_SET_ATTRIBUTE;
+        bc.arg = attr->index;
+        bc.line = parser->currentToken.line;
+        bc.column = parser->currentToken.column;
+        vec_push(parser->vm->prog_v, bc);
+    }
+}
+
+// COMP := <IDENT|'+'> <IDENT|STRING|NUMBER|ENTITY> ENDL
+void parseCOMP(Parser *parser, tn_entity *ent) {
     if (parser->currentToken.type == TOK_ENDL){
         nextToken(parser);
         return;
     }
-    if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_PLUS || parser->currentToken.type == TOK_MINUS) {
+    if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_PLUS) {
         int type = 0;
         char *name = NULL;
         if(parser->currentToken.type == TOK_IDENT) {
-            name = parser->currentToken.text;
-        } else if(parser->currentToken.type == TOK_MINUS) {
-            type = TYPE_ELEMENT;
+            parseAttr(parser, ent);
         } else if(parser->currentToken.type == TOK_PLUS) {
-            type = TYPE_OPTION;
+            parseOpt(parser, ent);
         }
-
-        nextToken(parser);
-
-        // Handle second part of COMP rule
-        if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING || parser->currentToken.type == TOK_DECIMAL
-         || parser->currentToken.type == TOK_INTEGER) {
-            value_t val = {
-                .tag = name,
-                .type = 0,
-            };
-            if(parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_STRING) {
-                val.type = type | TYPE_STRING;
-                val.data.string = parser->currentToken.text;
-                nextToken(parser);
-                if(parser->currentToken.type == TOK_LBRACE) {
-                    parseENTITY(parser, val.data.string, name, type);
-                } else {
-                    tncfg_add(&parser->cfg, val);
-                }
-            } else if(parser->currentToken.type == TOK_INTEGER) {
-                val.type = type | TYPE_INTEGER;
-                val.data.integer = atol(parser->currentToken.text);
-                free(parser->currentToken.text);
-                tncfg_add(&parser->cfg, val);
-                nextToken(parser);
-            } else {
-                val.type = type | TYPE_DECIMAL;
-                val.data.decimal = strtod(parser->currentToken.text, NULL);
-                free(parser->currentToken.text);
-                tncfg_add(&parser->cfg, val);
-                nextToken(parser);
-            }
-        } else if (parser->currentToken.type == TOK_LBRACE) {
-            parseENTITY(parser,NULL,name,type);
-        } else {
-            fprintf(stderr, "Error at line %d, column %d: expected IDENT, STRING, NUMBER, or ENTITY, but got %d\n",
-                    parser->currentToken.line, parser->currentToken.column, parser->currentToken.type);
-            exit(1);
-        }
-
         // Expect ENDL token
         if(parser->currentToken.type == TOK_EOF)
             return;
@@ -345,7 +386,7 @@ void parseCOMP(Parser *parser) {
     }
 }
 
-tncfg tncfg_parse(FILE *file) {
+tn_vm *tncfg_parse(FILE *file) {
     
     Parser parser;
     
@@ -359,231 +400,5 @@ tncfg tncfg_parse(FILE *file) {
     }
 
     fclose(file);
-    return parser.cfg;
-}
-
-tncfg_id tncfg_root(tncfg *cfg)
-{
-    return 0;
-}
-int tncfg_type(tncfg *cfg, tncfg_id id)
-{
-    return cfg->data[id].type & 0x0000000f;
-}
-int tncfg_tag_type(tncfg *cfg, tncfg_id id)
-{
-    return cfg->data[id].type & 0xfffffff0;
-}
-char *tncfg_tag(tncfg *cfg, tncfg_id id)
-{
-    return cfg->data[id].tag;
-}
-tncfg_id tncfg_entity_reset(tncfg *cfg, tncfg_id id)
-{
-    cfg->data[id].data.entity.ptr = id + 1;
-    if(cfg->data[id].data.entity.ptr == cfg->data[id].data.entity.to)
-        return -1;
-    return id + 1;
-}
-tncfg_id tncfg_entity_next(tncfg *cfg, tncfg_id id)
-{
-    tncfg_id ptr = cfg->data[id].data.entity.ptr;
-    tncfg_id to = cfg->data[id].data.entity.to;
-    int cur_type = cfg->data[ptr].type;
-    if( cur_type & TYPE_ENTITY ) {
-        tncfg_id next_start = cfg->data[ptr].data.entity.to;
-        cfg->data[id].data.entity.ptr = next_start;
-    } else {
-        cfg->data[id].data.entity.ptr++;
-    }
-    if(cfg->data[id].data.entity.ptr == to)
-        return -1;
-    return cfg->data[id].data.entity.ptr;
-}
-int64_t tncfg_value_integer(tncfg *cfg, tncfg_id id)
-{
-    return cfg->data[id].data.integer;
-}
-double tncfg_value_decimal(tncfg *cfg, tncfg_id id)
-{
-    return cfg->data[id].data.decimal;
-}
-char *tncfg_value_string(tncfg *cfg, tncfg_id id)
-{
-    return cfg->data[id].data.string;
-}
-tncfg_id tncfg_lookup_next(tncfg *cfg, tncfg_id id, const char *name, int type)
-{
-    tncfg_id child;
-    do {
-        child = tncfg_entity_next(cfg, id);
-    } while (child != -1 && !(
-        tncfg_type(cfg, child) == type && 
-        tncfg_tag_type(cfg, child) == 0 && 
-        !strcmp(tncfg_tag(cfg, child), name)
-    ));
-    return child;
-}
-tncfg_id tncfg_lookup_reset(tncfg *cfg, tncfg_id id, const char *name, int type)
-{
-    tncfg_id child = tncfg_entity_reset(cfg, id);
-    if(child == -1) {
-        return -1;
-    }
-    while (child != -1 && !(
-        tncfg_type(cfg, child) == type && 
-        tncfg_tag_type(cfg, child) == 0 &&
-        !strcmp(tncfg_tag(cfg, child), name)
-    ))
-        child = tncfg_entity_next(cfg, id);
-    return child;
-}
-
-int tncfg_comp_verify(tncfg *cfg, tncfg_id id, tncfg_comp *comps, size_t comps_count)
-{
-    int seen[comps_count];
-    int failed = 0;
-    memset(seen,0,comps_count * sizeof(int));
-    tncfg_id child = tncfg_entity_reset(cfg, id);
-    while(child != -1) {
-        if (tncfg_tag_type(cfg, child) == TYPE_ELEMENT) {
-            fprintf(stderr, "Unexpected element\n");
-            failed = 1;
-        } else if (tncfg_tag_type(cfg, child) == TYPE_OPTION) {
-            if(tncfg_type(cfg, child) != TYPE_STRING)
-            {
-                fprintf(stderr, "Unknown option\n");
-                failed = 1;
-            }
-            int f = 1;
-            for(int i=0;i<comps_count;i++)
-            {
-                if(comps[i].type & TYPE_STRING && !strcmp(tncfg_value_string(cfg,child), comps[i].string)) {
-                    if(seen[i]) {
-                        fprintf(stderr, "Duplicate option\n");
-                    } else {
-                        seen[i] = 1;
-                        f = 0;
-                    }
-                    break;
-                }
-            }
-            failed |= f;
-            if(f) {
-                fprintf(stderr, "Unknown option\n");
-            }
-        } else {
-            if(tncfg_type(cfg, child) == TYPE_DECIMAL)
-            {
-                fprintf(stderr, "Invalid property\n");
-                failed = 1;
-            }
-            else if (tncfg_type(cfg, child) == TYPE_INTEGER)
-            {
-                int f = 1;
-                for(int i=0;i<comps_count;i++)
-                {
-                    if(comps[i].type & TYPE_INTEGER && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
-                        if(seen[i]) {
-                            fprintf(stderr, "Duplicate parameter\n");
-                        } else {
-                            seen[i] = 1;
-                            f = 0;
-                        }
-                        break;
-                    }
-                }
-                failed |= f;
-                if(f) {
-                    fprintf(stderr, "Unknown parameter\n");
-                }
-            }
-            else if (tncfg_type(cfg, child) == TYPE_STRING)
-            {
-                int f = 1;
-                for(int i=0;i<comps_count;i++)
-                {
-                    if(comps[i].type & TYPE_STRING && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
-                        if(seen[i] && !comps[i].multiple) {
-                            fprintf(stderr, "Duplicate property\n");
-                        } else {
-                            seen[i] = 1;
-                            f = 0;
-                        }
-                        break;
-                    }
-                }
-                failed |= f;
-                if(f) {
-                    fprintf(stderr, "Unknown property\n");
-                }
-            }
-            else if (tncfg_type(cfg, child) == TYPE_ENTITY)
-            {
-                int f = 1;
-                for(int i=0;i<comps_count;i++)
-                {
-                    if(comps[i].type & TYPE_ENTITY && !strcmp(tncfg_tag(cfg,child), comps[i].string)) {
-                        if(seen[i] && !comps[i].multiple) {
-                            fprintf(stderr, "Duplicate entity\n");
-                        } else {
-                            seen[i] = 1;
-                            f = 0;
-                        }
-                        break;
-                    }
-                }
-                failed |= f;
-                if(f) {
-                    fprintf(stderr, "Unknown entity\n");
-                }
-            }
-        }
-        child = tncfg_entity_next(cfg, id);
-    }
-    for(int i=0; i<comps_count; i++)
-    {
-        if(comps[i].required && !seen[i]) {
-            fprintf(stderr, "property %s is required\n", comps[i].string);
-            failed = 1;
-        }
-    }
-    return failed;
-}
-
-char *tncfg_get_string(tncfg *cfg, tncfg_id id, const char *name)
-{
-    tncfg_id child;
-    child = tncfg_lookup_reset(cfg, id, name, TYPE_STRING);
-    if (child != -1) {
-        return cfg->data[child].data.string;
-    } else {
-        return ((char*)"");
-    }
-}
-int tncfg_get_int(tncfg *cfg, tncfg_id id, const char *name, int64_t *value)
-{
-    tncfg_id child;
-    child = tncfg_lookup_reset(cfg, id, name, TYPE_INTEGER);
-    if (child != -1) {
-        *value = cfg->data[child].data.integer;
-        return 1;
-    } else {
-        return 0;
-    }
-}
-int tncfg_get_decimal(tncfg *cfg, tncfg_id id, const char *name, double *value)
-{
-    tncfg_id child;
-    child = tncfg_lookup_reset(cfg, id, name, TYPE_DECIMAL);
-    if (child != -1) {
-        *value = cfg->data[child].data.decimal;
-        return 1;
-    } else {
-        return 0;
-    }
-}
-tncfg_id tncfg_get_entity(tncfg *cfg, tncfg_id id, const char *name)
-{
-    return tncfg_lookup_reset(cfg, id, name, TYPE_ENTITY);
+    return parser.vm;
 }
