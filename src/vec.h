@@ -39,3 +39,7 @@ typedef struct vec_header_t
     }while(0)
 
 #define vec_len(V) ((V) ? (VEC_GET_HDR((V))->len) : (0))
+
+#define vec_end(V) ((V) + (vec_len(V)))
+
+#define vec_foreach(I,V) for(I=(V);I<vec_end((V));I++)
