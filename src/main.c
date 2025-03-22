@@ -74,13 +74,13 @@ struct tn_intf_t {
     int is_added;
     struct nl_addr **ip_v;
     tn_intf *peer;
-    char *peer_intf_v;
-    char *peer_host_v;  
+    char *peer_intf_s;
+    char *peer_host_s;  
 };
 TN_REGISTER_ENTITY(tn_intf)
 {
-    self->peer_host_v = NULL;
-    self->peer_intf_v = NULL;
+    self->peer_host_s = NULL;
+    self->peer_intf_s = NULL;
     self->ip_v = NULL;
     self->name = NULL;
     self->is_added = 0;
@@ -97,7 +97,7 @@ TN_REGISTER_ATTRIBUTE(tn_intf,peer,TN_VM_TYPE_STRING,
     TN_ATTR_FLAG_ONLY_ONCE)
 {
     tn_intf *intf = (tn_intf *)ent;
-    if(readRef(val.as.string,2,&intf->peer_host_v,&intf->peer_intf_v)){
+    if(readRef(val.as.string,2,&intf->peer_host_s,&intf->peer_intf_s)){
         // throw err
     }
     return 0;
@@ -209,19 +209,6 @@ void tn_parse_error(tn_root *root, const char *fmt, ...) {
     fprintf(stderr, "\n");
     root->has_error = 1;
 }
-tn_intf *tn_lookup_intf_ip(tn_host *host, struct nl_addr *addr)
-{
-    tn_intf **intf;
-    struct nl_addr **ip;
-    vec_foreach(intf, host->intf_v) {
-        vec_foreach(ip,(*intf)->ip_v) {
-            if(vec_len((*intf)->ip_v) && nl_addr_cmp(*ip, addr) == 0) {
-                return *intf;
-            }
-        }
-    }
-    return NULL;
-}
 
 unsigned int xcrc32_next (unsigned char c, unsigned int crc);
 
@@ -236,6 +223,32 @@ uint32_t checksum(FILE *f) {
     return crc;
 }
 
+void tn_resolve_peers(tn_root *root)
+{
+    tn_host *host, **h, *other_host;
+    tn_intf *intf, **f, *other_intf;
+    vec_foreach(h, root->hosts_v) {
+        host = *h;
+        vec_foreach(f, host->intf_v) {
+            intf = *f;
+            if(intf->peer_host_s) {
+                other_host = tn_lookup_host(root, intf->peer_host_s);
+                if(!other_host) {
+                    // throw error
+                }
+                other_intf = tn_lookup_intf(other_host, intf->peer_intf_s);
+                if(!other_intf) {
+                    // throw error
+                }
+                if(intf->peer && intf->peer != other_intf) {
+                    // throw
+                }
+                intf->peer = other_intf;
+            }
+        }
+    }
+}
+
 tn_root *tn_eval(const char *file_path) {
     FILE *file = fopen(file_path, "rb");
     tn_root *root;
@@ -245,6 +258,7 @@ tn_root *tn_eval(const char *file_path) {
         tn_vm *vm = tncfg_parse(file);
         tn_vm_run(vm);
         root = (tn_root *)tn_vm_top(vm);
+        tn_resolve_peers(root);
         root->checksum = checksum(file);
     }
     return root;
