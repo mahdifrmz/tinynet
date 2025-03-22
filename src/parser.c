@@ -38,6 +38,8 @@ typedef struct {
     size_t slen;
 } Parser;
 
+void pushInstructions(Parser *parser, tn_entity_attribute *attr, tn_vm_value val);
+
 void pushChar(Parser *parser, char c)
 {
     if(!parser->sbuf) {
@@ -59,7 +61,7 @@ void initParser(Parser *parser, FILE *inputFile) {
     parser->column = 0;
     parser->buffer = -2;
     parser->sbuf = NULL;
-    parser->vm = tn_vm_init();
+    parser->vm = tn_vm_create();
 }
 
 // Helper function to advance the character position
@@ -205,7 +207,7 @@ void expect(Parser *parser, TokenType expectedType) {
 // Forward declarations for recursive parsing functions
 void parseDOC(Parser *parser);
 void parseBODY(Parser *parser, tn_entity *ent);
-void parseENTITY(Parser *parser, tn_entity *ent,  char *name);
+void parseENTITY(Parser *parser, tn_entity *ent, const char *name);
 void parseCOMP(Parser *parser, tn_entity *ent);
 
 // DOC := BODY
@@ -215,7 +217,7 @@ void parseDOC(Parser *parser) {
 }
 
 // ENTITY := [ IDENT | STRING ] '{' BODY '}'
-void parseENTITY(Parser *parser, tn_entity *ent,  char *name) {
+void parseENTITY(Parser *parser, tn_entity *ent,  const char *name) {
     uint32_t line, column;
     tn_vm_bytecode bc;
     line = parser->currentToken.line;
@@ -237,7 +239,7 @@ void parseENTITY(Parser *parser, tn_entity *ent,  char *name) {
         } else {
             tn_vm_value val;
             val.type = TN_VM_TYPE_STRING;
-            val.as.string = name;
+            val.as.string = strdup(name);
             pushInstructions(parser, attr, val);
         }
     }
@@ -303,7 +305,7 @@ void parseAttr(Parser *parser, tn_entity *ent)
 {
     const char *attr_name = parser->currentToken.text;
     nextToken(parser);
-    tn_entity *child;
+    tn_entity **child;
     tn_entity_attribute *attr;
     tn_vm_value val;
     tn_vm_bytecode bc;
@@ -347,11 +349,11 @@ void parseAttr(Parser *parser, tn_entity *ent)
             nextToken(parser);
         }
         vec_foreach(child,tn_entities) {
-            if(!strcmp(child,attr->name)) {
+            if(!strcmp((*child)->name,attr->name)) {
                 break;
             }
         }
-        parseENTITY(parser,child,name);
+        parseENTITY(parser,*child,name);
         // push the SET instruction
         bc.opcode = TN_VM_OPCODE_SET_ATTRIBUTE;
         bc.arg = attr->index;
@@ -368,8 +370,6 @@ void parseCOMP(Parser *parser, tn_entity *ent) {
         return;
     }
     if (parser->currentToken.type == TOK_IDENT || parser->currentToken.type == TOK_PLUS) {
-        int type = 0;
-        char *name = NULL;
         if(parser->currentToken.type == TOK_IDENT) {
             parseAttr(parser, ent);
         } else if(parser->currentToken.type == TOK_PLUS) {

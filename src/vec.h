@@ -42,4 +42,6 @@ typedef struct vec_header_t
 
 #define vec_end(V) ((V) + (vec_len(V)))
 
+#define vec_free(V) do { if((V)) free(VEC_GET_HDR((V))) } while(0)
+
 #define vec_foreach(I,V) for(I=(V);I<vec_end((V));I++)
