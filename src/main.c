@@ -728,7 +728,6 @@ int main(int argc, char **argv)
             break;
         switch(c) {
             case 0:
-                printf("AAAAAAAAAAA %d\n", option_index);
                 break;
             case 'n':
                 args.name = optarg;
