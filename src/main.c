@@ -21,7 +21,6 @@
 #include <netlink/route/addr.h>
 #include <netlink/route/link/veth.h>
 #include <assert.h>
-#include "ll.h"
 #include "vec.h"
 #include "parse.h"
 #include "vm.h"

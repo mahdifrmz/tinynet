@@ -48,6 +48,3 @@
     for( E = LL, I = 0; E && ( E != LL || I == 0 ); E = E->ll_next, I++ )
 
 #endif
-
-
-// A B C D
