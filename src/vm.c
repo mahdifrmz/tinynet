@@ -1,8 +1,10 @@
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include "vec.h"
 #include "vm.h"
 
+extern tn_entity __tn_root_entity_descriptor;
 tn_entity** tn_entities;
 
 void tn_vm_opcode_set_attr(tn_vm *vm, tn_vm_bytecode bc) {
@@ -10,13 +12,17 @@ void tn_vm_opcode_set_attr(tn_vm *vm, tn_vm_bytecode bc) {
     tn_vm_value parent;
     vec_pop(vm->stack_v, val);
     vec_pop(vm->stack_v, parent);
+    vec_push(vm->stack_v, parent);
     tn_entity_attribute attr = parent.as.entity->entity->attrs_v[bc.arg];
     if(val.type == TN_VM_TYPE_ENTITY) {
         tn_entity *ent = val.as.entity->entity;
         tn_entity_attribute *own_attr;
         if(ent->validator) {
-            if(!ent->validator(val.as.entity)) {
-                // TODO: throw error
+            if(ent->validator(val.as.entity)) {
+                fprintf(stderr,"Error: invalid instance of entity '%s' (line: %d,column: %d)\n",
+                    ent->name, bc.line, bc.column);
+                vm->has_error = 1;
+                return;
             }
         }
         if(attr.name_unicity && val.as.entity->name) {
@@ -24,27 +30,38 @@ void tn_vm_opcode_set_attr(tn_vm *vm, tn_vm_bytecode bc) {
         }
         vec_foreach(own_attr, ent->attrs_v) {
             if(own_attr->mandatory && !((1 << own_attr->index) & val.as.entity->flags)) {
-                // TODO: throw error: not all necessary attributes are set
+                fprintf(stderr,"Error: Non-optional attribute '%s' is not set (line: %d,column: %d)\n",
+                    own_attr->name, bc.line, bc.column);
+                vm->has_error = 1;
+                return;        
             }
         }
     }
     if(attr.validator) {
-        if(!attr.validator(parent.as.entity, val)) {
-            // TODO: throw error
+        if(attr.validator(parent.as.entity, val)) {
+            fprintf(stderr,"Error: Invalid value for attribute '%s' (line: %d,column: %d)\n",
+                attr.name, bc.line, bc.column);
+            vm->has_error = 1;
+            return;
         }
     }
-    if((1 << attr.index) & val.as.entity->flags) {
-        // TODO: throw error: attribute already set*
+    if(((1 << attr.index) & parent.as.entity->flags) && attr.only_once) {
+        fprintf(stderr,"Error: Duplicate attribute '%s' (line: %d,column: %d)\n",
+            attr.name, bc.line, bc.column);
+        vm->has_error = 1;
+        return;
     }
     if(attr.setter(parent.as.entity, val))
     {
-        // TODO: throw error: validation failed
+        fprintf(stderr,"Error: Invalid value for attribute '%s' (line: %d,column: %d)\n",
+            attr.name, bc.line, bc.column);
+        vm->has_error = 1;
+        return;
     }
     if(attr.is_name) {
         val.as.entity->name = val.as.string;
     }
     parent.as.entity->flags |= (1 << attr.index);
-    vec_push(vm->stack_v, parent);
 }
 
 void tn_vm_run(tn_vm *vm)
@@ -68,7 +85,9 @@ void tn_vm_run(tn_vm *vm)
                 tn_vm_value ent;
                 vec_pop(vm->stack_v, ent);
                 if ((1 << bc.arg) & ent.as.entity->options) {
-                    // TODO: throw error: option already set
+                    fprintf(stderr,"Error: option '%s' already set (line: %d,column: %d)\n",
+                        ent.as.entity->entity->options_v[bc.arg].name, bc.line, bc.column);
+                    vm->has_error = 1;
                 } else {
                     ent.as.entity->options |= (1 << bc.arg);
                 }
@@ -84,23 +103,23 @@ uint32_t tn_vm_add_constant(tn_vm *vm, tn_vm_value val)
     return vec_len(vm->constants_v) - 1;
 }
 
+tn_entity *tn_root_entity()
+{
+    return &__tn_root_entity_descriptor;
+}
+
 tn_vm *tn_vm_create()
 {
     tn_vm *vm;
     tn_vm_value val;
-    tn_entity **child;
     vm = malloc(sizeof(tn_vm));
     vm->prog_counter = 0;
     vm->constants_v = NULL;
     vm->prog_v = NULL;
     vm->stack_v = NULL;
-    vec_foreach(child,tn_entities) {
-        if(!strcmp((*child)->name,"root")) {
-            break;
-        }
-    }
+    vm->has_error = 0;
     val.type = TN_VM_TYPE_ENTITY;
-    val.as.entity = tn_entities[(*child)->index]->create();
+    val.as.entity = tn_root_entity()->create();
     vec_push(vm->stack_v, val);
     return vm;
 }

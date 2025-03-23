@@ -72,6 +72,7 @@ typedef struct tn_vm_entity_header_t {
 } tn_vm_entity_header;
 
 typedef struct tn_vm_t {
+    int has_error;
     int prog_counter;
     tn_vm_bytecode *prog_v;
     tn_vm_value *stack_v;
@@ -80,16 +81,17 @@ typedef struct tn_vm_t {
 
 extern tn_entity** tn_entities;
 
+tn_entity *tn_root_entity();
 void *tn_vm_top(tn_vm *vm);
 void tn_vm_run(tn_vm *vm);
 tn_vm *tn_vm_create();
 uint32_t tn_vm_add_constant(tn_vm *vm, tn_vm_value val);
 
-#define TN_REGISTER_ENTITY(NAME)\
+#define TN_REGISTER_ENTITY(NAME,LITERAL)\
 tn_vm_entity_header *__##NAME##_create();\
 void __##NAME##_init(NAME *self);\
 tn_entity __##NAME##_entity_descriptor = {\
-    .name = #NAME,\
+    .name = LITERAL,\
     .create = __##NAME##_create,\
     .attrs_v = NULL,\
     .options_v = NULL,\
@@ -116,14 +118,14 @@ void __##NAME##_init(NAME *self)
 #define TN_ATTR_FLAG_ONLY_ONCE 0x02
 #define TN_ATTR_FLAG_NAME_UNICITY 0x04
 
-#define TN_REGISTER_ATTRIBUTE(ENTITY,NAME,TYPE,FLAGS)\
+#define TN_REGISTER_ATTRIBUTE(ENTITY,NAME,LITERAL,TYPE,FLAGS)\
 static int __##ENTITY##_##NAME##_setter(tn_vm_entity_header* ent, tn_vm_value val);\
 __attribute__((constructor))\
 static void __##ENTITY##_##NAME##_descriptor_insert() {\
     tn_entity_attribute tn_attr_descriptor = {\
-        .name=#NAME,\
+        .name=LITERAL,\
         .type=TYPE,\
-        .is_name=!strcmp("name",#NAME),\
+        .is_name=!strcmp("name",LITERAL),\
         .only_once=((FLAGS) & TN_ATTR_FLAG_ONLY_ONCE),\
         .mandatory= ((FLAGS) & TN_ATTR_FLAG_MANDATORY),\
         .name_unicity=((FLAGS) & TN_ATTR_FLAG_NAME_UNICITY),\

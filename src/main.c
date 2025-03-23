@@ -75,17 +75,18 @@ struct tn_intf_t {
     struct nl_addr **ip_v;
     tn_intf *peer;
     char *peer_intf_s;
-    char *peer_host_s;  
+    char *peer_host_s;
 };
-TN_REGISTER_ENTITY(tn_intf)
+TN_REGISTER_ENTITY(tn_intf,"iface")
 {
+    self->peer = NULL;
     self->peer_host_s = NULL;
     self->peer_intf_s = NULL;
     self->ip_v = NULL;
     self->name = NULL;
     self->is_added = 0;
 }
-TN_REGISTER_ATTRIBUTE(tn_intf,name,TN_VM_TYPE_STRING,
+TN_REGISTER_ATTRIBUTE(tn_intf,name,"name",TN_VM_TYPE_STRING,
     TN_ATTR_FLAG_MANDATORY|
     TN_ATTR_FLAG_ONLY_ONCE)
 {
@@ -93,7 +94,7 @@ TN_REGISTER_ATTRIBUTE(tn_intf,name,TN_VM_TYPE_STRING,
     intf->name = val.as.string;
     return 0;
 }
-TN_REGISTER_ATTRIBUTE(tn_intf,peer,TN_VM_TYPE_STRING,
+TN_REGISTER_ATTRIBUTE(tn_intf,peer,"peer",TN_VM_TYPE_STRING,
     TN_ATTR_FLAG_ONLY_ONCE)
 {
     tn_intf *intf = (tn_intf *)ent;
@@ -102,13 +103,15 @@ TN_REGISTER_ATTRIBUTE(tn_intf,peer,TN_VM_TYPE_STRING,
     }
     return 0;
 }
-TN_REGISTER_ATTRIBUTE(tn_intf,ip,TN_VM_TYPE_STRING,0)
+TN_REGISTER_ATTRIBUTE(tn_intf,ip,"ip",TN_VM_TYPE_STRING,0)
 {
     int err;
     tn_intf *intf = (tn_intf *)ent;
     struct nl_addr *addr;
     if ((err = nl_addr_parse(val.as.string, AF_INET, &addr)) < 0) {
         // throw error
+        fprintf(stderr,"invalid ip address '%s'\n", val.as.string);
+        return 1;
     }
     vec_push(intf->ip_v, addr);
     return 0;
@@ -121,13 +124,13 @@ struct tn_host_t {
     const char *name;
     int is_switch;
 };
-TN_REGISTER_ENTITY(tn_host)
+TN_REGISTER_ENTITY(tn_host,"host")
 {
     self->name = NULL;
     self->intf_v = NULL;
     self->is_switch = 0;
 }
-TN_REGISTER_ATTRIBUTE(tn_host,name,TN_VM_TYPE_STRING,
+TN_REGISTER_ATTRIBUTE(tn_host,name,"name",TN_VM_TYPE_STRING,
     TN_ATTR_FLAG_MANDATORY|
     TN_ATTR_FLAG_ONLY_ONCE)
 {
@@ -135,7 +138,7 @@ TN_REGISTER_ATTRIBUTE(tn_host,name,TN_VM_TYPE_STRING,
     host->name = val.as.string;
     return 0;
 }
-TN_REGISTER_ATTRIBUTE(tn_host,intf,TN_VM_TYPE_ENTITY,
+TN_REGISTER_ATTRIBUTE(tn_host,intf,"iface",TN_VM_TYPE_ENTITY,
     TN_ATTR_FLAG_NAME_UNICITY)
 {
     tn_host *host = (tn_host *)ent;
@@ -152,13 +155,13 @@ struct tn_root_t {
     int has_error;
     tn_host **hosts_v;
 };
-TN_REGISTER_ENTITY(tn_root)
+TN_REGISTER_ENTITY(tn_root,"root")
 {
     self->hosts_v = NULL;
     self->has_error = 0;
 }
 
-TN_REGISTER_ATTRIBUTE(tn_host,host,TN_VM_TYPE_STRING,
+TN_REGISTER_ATTRIBUTE(tn_root,host,"host",TN_VM_TYPE_ENTITY,
     TN_ATTR_FLAG_NAME_UNICITY)
 {
     tn_root *root = (tn_root *)ent;
@@ -258,8 +261,17 @@ tn_root *tn_eval(const char *file_path) {
         tn_vm *vm = tncfg_parse(file);
         tn_vm_run(vm);
         root = (tn_root *)tn_vm_top(vm);
+        root->has_error = vm->has_error;
+        if(root->has_error){
+            return root;
+        }
         tn_resolve_peers(root);
+        if(root->has_error){
+            return root;
+        }
+        fseek(file, 0, SEEK_SET);
         root->checksum = checksum(file);
+        fclose(file);
     }
     return root;
 }

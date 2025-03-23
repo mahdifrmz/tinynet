@@ -194,11 +194,43 @@ next_token_end:
     return token;
 }
 
+const char *tokentype_tostring(TokenType t)
+{
+    switch (t)
+    {
+        case TOK_IDENT:
+        return "identifier";
+        case TOK_STRING:
+        return "string";
+        case TOK_INTEGER:
+        return "integer";
+        case TOK_DECIMAL:
+        return "decimal";
+        case TOK_PLUS:
+        return "'+'";
+        case TOK_LBRACE:
+        return "'{'";
+        case TOK_RBRACE:
+        return "'}'";
+        case TOK_ENDL:
+        return "new-line";
+        case TOK_EOF:
+        return "EOF";
+        case TOK_UNKNOWN:
+        return "";
+    }
+    return "";
+}
+
 // Expect a specific token type
 void expect(Parser *parser, TokenType expectedType) {
     if (parser->currentToken.type != expectedType) {
-        fprintf(stderr, "Error at line %d, column %d: expected token type %d, but got %d\n",
-                parser->currentToken.line, parser->currentToken.column, expectedType, parser->currentToken.type);
+        fprintf(stderr, "Error at line %d, column %d: expected token %s, but got %s\n",
+            parser->currentToken.line,
+            parser->currentToken.column, 
+            tokentype_tostring(expectedType),
+            tokentype_tostring(parser->currentToken.type)
+        );
         exit(1);
     }
     nextToken(parser);
@@ -213,7 +245,7 @@ void parseCOMP(Parser *parser, tn_entity *ent);
 // DOC := BODY
 void parseDOC(Parser *parser) {
     // parse the root entity
-    parseBODY(parser, tn_entities[0]);
+    parseBODY(parser, tn_root_entity());
 }
 
 // ENTITY := [ IDENT | STRING ] '{' BODY '}'
@@ -235,7 +267,8 @@ void parseENTITY(Parser *parser, tn_entity *ent,  const char *name) {
             }
         }
         if(attr == vec_end(ent->attrs_v)) {
-            // TODO: error
+            fprintf(stderr,"Entity '%s' does not have a 'name' attribute.\n", ent->name);
+            exit(1);
         } else {
             tn_vm_value val;
             val.type = TN_VM_TYPE_STRING;
@@ -250,9 +283,8 @@ void parseENTITY(Parser *parser, tn_entity *ent,  const char *name) {
 
 // BODY := COMP*
 void parseBODY(Parser *parser, tn_entity *ent) {
-    while ( parser->currentToken.type == TOK_IDENT ||
-            parser->currentToken.type == TOK_PLUS ||
-            parser->currentToken.type == TOK_ENDL )
+    while ( parser->currentToken.type != TOK_EOF &&
+            parser->currentToken.type != TOK_RBRACE)
     {
         parseCOMP(parser, ent);
     }
@@ -264,20 +296,19 @@ void parseOpt(Parser *parser, tn_entity *ent)
     if(parser->currentToken.type != TOK_IDENT) {
         expect(parser,TOK_IDENT);
     }
-    tn_entity_option *opt;
-    int idx = -1;
+    tn_entity_option *opt = vec_end(ent->options_v);
     vec_foreach(opt, ent->options_v) {
         if(!strcmp(opt->name, parser->currentToken.text)) {
-            idx = opt->index;
             break;
         }
     }
-    if(idx == -1) {
-        // TODO: err
+    if(opt == vec_end(ent->options_v)) {
+        fprintf(stderr,"Entity %s has no option '%s'.\n", ent->name, parser->currentToken.text);
+        exit(1);
     } else {
         tn_vm_bytecode bc;
         bc.opcode = TN_VM_OPCODE_SET_OPTION;
-        bc.arg = idx;
+        bc.arg = opt->index;
         bc.line = parser->currentToken.line;
         bc.column = parser->currentToken.column;
         vec_push(parser->vm->prog_v, bc);
@@ -315,7 +346,8 @@ void parseAttr(Parser *parser, tn_entity *ent)
         }
     }
     if(attr == vec_end(ent->attrs_v)) {
-        // TODO: error
+        fprintf(stderr,"Entity '%s' has no attribute '%s'.\n", ent->name, attr_name);
+        exit(1);
     }
     else if(attr->type == TN_VM_TYPE_STRING) {
         if(parser->currentToken.type != TOK_IDENT && parser->currentToken.type != TOK_STRING){
@@ -324,6 +356,7 @@ void parseAttr(Parser *parser, tn_entity *ent)
         val.type = TN_VM_TYPE_STRING;
         val.as.string = parser->currentToken.text;
         nextToken(parser);
+        pushInstructions(parser, attr, val);
     } else if(attr->type == TN_VM_TYPE_INTEGER) {
         if(parser->currentToken.type != TOK_INTEGER){
             expect(parser, TOK_INTEGER);
@@ -399,6 +432,5 @@ tn_vm *tncfg_parse(FILE *file) {
                 parser.currentToken.line, parser.currentToken.column);
     }
 
-    fclose(file);
     return parser.vm;
 }
