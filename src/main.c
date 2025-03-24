@@ -237,14 +237,31 @@ void tn_resolve_peers(tn_root *root)
             if(intf->peer_host_s) {
                 other_host = tn_lookup_host(root, intf->peer_host_s);
                 if(!other_host) {
-                    // throw error
+                    fprintf(stderr, "[Link Error]: no host '%s' | host:%s , iface:%s",
+                        intf->peer_host_s,
+                        host->name,
+                        intf->name);
+                    root->has_error = 1;
+                    continue;
                 }
                 other_intf = tn_lookup_intf(other_host, intf->peer_intf_s);
                 if(!other_intf) {
-                    // throw error
+                    fprintf(stderr, "[Link Error]: no interface '%s' in host '%s' | host:%s , iface:%s", 
+                        intf->peer_intf_s, 
+                        intf->peer_host_s, 
+                        host->name, 
+                        intf->name);
+                    root->has_error = 1;
+                    continue;
                 }
                 if(intf->peer && intf->peer != other_intf) {
-                    // throw
+                    fprintf(stderr, "[Link Error] alreay connected to %s/%s | host:%s , iface:%s", 
+                        intf->peer->host->name, 
+                        intf->peer->name,
+                        host->name,
+                        intf->name);
+                    root->has_error = 1;
+                    continue;
                 }
                 intf->peer = other_intf;
             }
