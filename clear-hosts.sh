@@ -1,9 +1,9 @@
 #!/bin/bash
-if [[ ! -d /run/tomnet/sim ]]
+if [[ ! -d /run/tinynet/sim ]]
 then
     exit 1
 fi
-cd /run/tomnet/sim
+cd /run/tinynet/sim
 for dir in $(ls)
 do
     cd $dir/hosts

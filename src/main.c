@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 #include <getopt.h>
 #include <stdio.h>
-#include <toml.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -25,8 +24,8 @@
 #include "parse.h"
 #include "vm.h"
 
-#define NETNS_MOUNT_DIR "/run/tomnet/sim"
-#define LOCKFILE_PATH "/run/tomnet/lock"
+#define NETNS_MOUNT_DIR "/run/tinynet/sim"
+#define LOCKFILE_PATH "/run/tinynet/lock"
 
 #define MAX_SIM_NAME 128
 #define MAX_HOST_NAME 256
@@ -475,7 +474,7 @@ void tn_create_intf(tn_intf *intf, struct nl_sock *nlsock)
 }
 
 /*
-    - /run/tomnet
+    - /run/tinynet
         - sim
             - 73847632874843
                 - hosts
@@ -492,15 +491,15 @@ void tn_create_intf(tn_intf *intf, struct nl_sock *nlsock)
 FILE *tn_lock()
 {
     int mode = 0664;
-    mkdir("/run/tomnet", mode);
+    mkdir("/run/tinynet", mode);
     FILE *lockfile = fopen(LOCKFILE_PATH,"w+");
     if(!lockfile) {
         perror("Failed to gain lock");
         exit(1);
     }
-    if(mkdir("/run/tomnet/sim", mode) == 0) {
-        if (mount("", "/run/tomnet/sim", "tmpfs", MS_SHARED | MS_REC, NULL) < -1) {
-            perror("Failed to mount Tomnet tmpfs");
+    if(mkdir("/run/tinynet/sim", mode) == 0) {
+        if (mount("", "/run/tinynet/sim", "tmpfs", MS_SHARED | MS_REC, NULL) < -1) {
+            perror("Failed to mount tinynet tmpfs");
             exit(1);
         }
     }
@@ -704,10 +703,10 @@ void cli_up(tn_args args)
 void print_help()
 {
     printf(
-        "Usage: tomnet <up|parse> CONFIG\n"
-        "       tomnet <down|show> SIM\n"
-        "       tomnet run SIM HOST CMD...\n"
-        "       tomnet list\n"
+        "Usage: tinynet <up|parse> CONFIG\n"
+        "       tinynet <down|show> SIM\n"
+        "       tinynet run SIM HOST CMD...\n"
+        "       tinynet list\n"
         "\n"
         "   options:\n"
         "       -n  --name              assign name to new simulation\n"
@@ -741,7 +740,7 @@ int main(int argc, char **argv)
     };
 
     if(geteuid() != 0) {
-        fprintf(stderr,"Tomnet requires root priviledges, run again as root");
+        fprintf(stderr,"tinynet requires root priviledges, run again as root");
         return 1;
     }
 
