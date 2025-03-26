@@ -1,0 +1,27 @@
+host h1 {
+    iface eth1 {
+        peer h2/eth1
+        ip 10.0.0.10/24
+    }
+
+    iface eth2 {
+        peer h3/eth1
+        ip 10.0.1.11/24
+    }
+}
+
+host h2 {
+    iface eth1 {
+        ip 10.0.0.12/24
+    }
+
+    iface eth2 {
+        ip 10.0.4.14/24
+    }
+}
+
+host h3 {
+    iface eth1 {
+        ip 10.0.1.13/24
+    }
+}
