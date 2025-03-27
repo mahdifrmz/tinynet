@@ -87,9 +87,9 @@ void tn_vm_run(tn_vm *vm);
 tn_vm *tn_vm_create();
 uint32_t tn_vm_add_constant(tn_vm *vm, tn_vm_value val);
 
-#define TN_REGISTER_ENTITY(NAME,LITERAL)\
+#define TN_REGISTER_ENTITY_ALIAS(STRUCT,NAME,LITERAL)\
 tn_vm_entity_header *__##NAME##_create();\
-void __##NAME##_init(NAME *self);\
+void __##NAME##_init(STRUCT *self);\
 tn_entity __##NAME##_entity_descriptor = {\
     .name = LITERAL,\
     .create = __##NAME##_create,\
@@ -104,22 +104,24 @@ static void __##NAME##_descriptor_insert() {\
 }\
 tn_vm_entity_header *__##NAME##_create()\
 {\
-    tn_vm_entity_header *obj = malloc(sizeof(NAME));\
+    tn_vm_entity_header *obj = malloc(sizeof(STRUCT));\
     obj->options = 0;\
     obj->flags = 0;\
     obj->name = NULL;\
     obj->entity = &__##NAME##_entity_descriptor;\
-    __##NAME##_init((NAME*)obj);\
+    __##NAME##_init((STRUCT*)obj);\
     return obj;\
 }\
-void __##NAME##_init(NAME *self)
+void __##NAME##_init(STRUCT *self)
+
+#define TN_REGISTER_ENTITY(NAME,LITERAL) TN_REGISTER_ENTITY_ALIAS(NAME,NAME,LITERAL)
 
 #define TN_ATTR_FLAG_MANDATORY 0x01
 #define TN_ATTR_FLAG_ONLY_ONCE 0x02
 #define TN_ATTR_FLAG_NAME_UNICITY 0x04
 
 #define TN_REGISTER_ATTRIBUTE(ENTITY,NAME,LITERAL,TYPE,FLAGS)\
-static int __##ENTITY##_##NAME##_setter(tn_vm_entity_header* ent, tn_vm_value val);\
+static int __##ENTITY##_##NAME##_setter(ENTITY* ent, tn_vm_value val);\
 __attribute__((constructor))\
 static void __##ENTITY##_##NAME##_descriptor_insert() {\
     tn_entity_attribute tn_attr_descriptor = {\
@@ -135,7 +137,7 @@ static void __##ENTITY##_##NAME##_descriptor_insert() {\
     tn_attr_descriptor.index = vec_len(__##ENTITY##_entity_descriptor.attrs_v);\
     vec_push(__##ENTITY##_entity_descriptor.attrs_v, tn_attr_descriptor);\
 }\
-static int __##ENTITY##_##NAME##_setter(tn_vm_entity_header* ent, tn_vm_value val)
+static int __##ENTITY##_##NAME##_setter(ENTITY* ent, tn_vm_value val)
 
 #define TN_REGISTER_OPTION(ENTITY,NAME)\
 __attribute__((constructor))\
@@ -147,6 +149,6 @@ static void __##ENTITY##_##NAME##_descriptor_insert() {\
     tn_opt_descriptor.index = vec_len(__##ENTITY##_entity_descriptor.options_v);\
     vec_push(__##NAME##_entity_descriptor.options_v, tn_opt_descriptor);\
 }\
-static void __##ENTITY##_##NAME##_setter(tn_vm_entity_header* ent)
+static void __##ENTITY##_##NAME##_setter(ENTITY* ent)
 
 #endif

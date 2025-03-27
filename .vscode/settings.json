@@ -11,6 +11,7 @@
         "link.h": "c",
         "veth.h": "c",
         "vec.h": "c",
-        "typeinfo": "c"
+        "typeinfo": "c",
+        "dirent.h": "c"
     },
 }

@@ -65,6 +65,53 @@ int readRef(const char* refstr,int field_count,...)
 typedef struct tn_root_t tn_root;
 typedef struct tn_host_t tn_host;
 typedef struct tn_intf_t tn_intf;
+typedef struct tn_cmd_t tn_cmd;
+typedef struct tn_cmdargv_t tn_cmdargv;
+typedef struct tn_cmdlist_t tn_cmdlist;
+
+struct tn_cmdargv_t {
+    char **args_v;
+};
+
+struct tn_cmd_t {
+    int is_daemon;
+    tn_cmdargv *argv;
+    char *expected_stdout;
+    char *expected_stderr;
+    int expected_status;
+};
+
+struct tn_cmdlist_t {
+    tn_cmd **cmds_v;
+};
+TN_REGISTER_ENTITY(tn_cmdlist, "cmd")
+{
+    self->cmds_v = NULL;
+}
+TN_REGISTER_ATTRIBUTE(tn_cmdlist, line, "line", TN_VM_TYPE_STRING, 0)
+{
+    tn_cmdargv *argv = malloc(sizeof(tn_cmdargv));
+    argv->args_v = NULL;
+    char *buf = NULL;
+    for(char *p = val.as.string;; p++)
+    {
+        if (*p == 0 || *p == ' ') {
+            if(vec_len(buf)) {
+                vec_push(argv->args_v, buf);
+                buf = NULL;
+            }
+        } else {
+            vec_push(buf, *p);
+        }
+    }
+    tn_cmd *cmd = malloc(sizeof(tn_cmd));
+    cmd->argv = argv;
+    cmd->is_daemon = 0;
+    cmd->expected_stdout = NULL;
+    cmd->expected_stderr = NULL;
+    cmd->expected_status = 0;
+    vec_push(ent->cmds_v, cmd);
+}
 
 struct tn_intf_t {
     tn_vm_entity_header header;
