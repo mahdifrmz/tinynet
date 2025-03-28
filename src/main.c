@@ -11,6 +11,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/sysinfo.h>
 #include <net/if.h>
 #include <errno.h>
 #include <dirent.h>
@@ -20,6 +21,7 @@
 #include <netlink/route/addr.h>
 #include <netlink/route/link/veth.h>
 #include <assert.h>
+#include "ll.h"
 #include "vec.h"
 #include "parse.h"
 #include "vm.h"
@@ -70,29 +72,53 @@ typedef struct tn_cmdargv_t tn_cmdargv;
 typedef struct tn_cmdlist_t tn_cmdlist;
 
 struct tn_cmdargv_t {
+    tn_vm_entity_header header;
     char **args_v;
 };
+TN_REGISTER_ENTITY(tn_cmdargv, "argv")
+{
+    self->args_v = NULL;
+}
 
 struct tn_cmd_t {
+    tn_vm_entity_header header;
+    tn_cmd *ll_next;
+    tn_cmd *ll_prev;
+    tn_cmdlist *list;
     int is_daemon;
     tn_cmdargv *argv;
     char *expected_stdout;
     char *expected_stderr;
     int expected_status;
 };
+TN_REGISTER_ENTITY(tn_cmd, "exec")
+{
+    self->argv = NULL;
+    self->expected_status = 0;
+    self->expected_stdout = NULL;
+    self->expected_stderr = NULL;
+    self->ll_next = self->ll_prev;
+    self->list = NULL;
+    self->is_daemon = 0;
+}
 
 struct tn_cmdlist_t {
+    tn_vm_entity_header header;
+    tn_host *host;
     tn_cmd **cmds_v;
+    int current_idx;
+    int current_pid;
 };
 TN_REGISTER_ENTITY(tn_cmdlist, "cmd")
 {
+    self->current_pid = 0;
+    self->current_idx = 0;
     self->cmds_v = NULL;
 }
 TN_REGISTER_ATTRIBUTE(tn_cmdlist, line, "line", TN_VM_TYPE_STRING, 0)
 {
-    tn_cmdargv *argv = malloc(sizeof(tn_cmdargv));
-    argv->args_v = NULL;
     char *buf = NULL;
+    tn_cmdargv *argv = (tn_cmdargv*)ENTITY_CREATOR(tn_cmdargv)();
     for(char *p = val.as.string;; p++)
     {
         if (*p == 0 || *p == ' ') {
@@ -100,17 +126,18 @@ TN_REGISTER_ATTRIBUTE(tn_cmdlist, line, "line", TN_VM_TYPE_STRING, 0)
                 vec_push(argv->args_v, buf);
                 buf = NULL;
             }
+            if(*p == 0) {
+                break;
+            }
         } else {
             vec_push(buf, *p);
         }
     }
-    tn_cmd *cmd = malloc(sizeof(tn_cmd));
+    tn_cmd *cmd = (tn_cmd *)ENTITY_CREATOR(tn_cmd)();
     cmd->argv = argv;
-    cmd->is_daemon = 0;
-    cmd->expected_stdout = NULL;
-    cmd->expected_stderr = NULL;
-    cmd->expected_status = 0;
+    cmd->list = ent;
     vec_push(ent->cmds_v, cmd);
+    return 0;
 }
 
 struct tn_intf_t {
@@ -167,6 +194,7 @@ struct tn_host_t {
     tn_vm_entity_header header;
     tn_root *root;
     tn_intf **intf_v;
+    tn_cmdlist **cmdlists_v;
     const char *name;
     int is_switch;
 };
@@ -174,6 +202,7 @@ TN_REGISTER_ENTITY(tn_host,"host")
 {
     self->name = NULL;
     self->intf_v = NULL;
+    self->cmdlists_v = NULL;
     self->is_switch = 0;
 }
 TN_REGISTER_ATTRIBUTE(tn_host,name,"name",TN_VM_TYPE_STRING,
@@ -191,6 +220,14 @@ TN_REGISTER_ATTRIBUTE(tn_host,intf,"iface",TN_VM_TYPE_ENTITY,
     tn_intf *intf = (tn_intf *)val.as.entity;
     intf->host = host;
     vec_push(host->intf_v,intf);
+    return 0;
+}
+
+TN_REGISTER_ATTRIBUTE(tn_host,cmd,"cmd",TN_VM_TYPE_ENTITY,0)
+{
+    tn_cmdlist *cmdlist = (tn_cmdlist *)val.as.entity;
+    cmdlist->host = ent;
+    vec_push(ent->cmdlists_v, cmdlist);
     return 0;
 }
 
@@ -520,6 +557,115 @@ void tn_create_intf(tn_intf *intf, struct nl_sock *nlsock)
     }
 }
 
+void command_exec(const char *sim_name, const char *host_name, char *program, char **argv)
+{
+    FILE *nsfile;
+    DIR *simdir;
+    char path_buf[512];
+    int len;
+    len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s", sim_name);
+    simdir = opendir(path_buf);
+    if(!simdir) {
+        fprintf(stderr, "Simulation '%s' not found\n", sim_name);
+        exit(1);
+    }
+    snprintf(path_buf + len, sizeof(path_buf) - len, "/hosts/%s", host_name);
+    nsfile = fopen(path_buf, "r");
+    if(!nsfile) {
+        fprintf(stderr, "Host '%s' in simulation '%s' not found\n", host_name, sim_name);
+        exit(1);
+    }
+    if (setns(fileno(nsfile), CLONE_NEWNET) == -1) {
+        perror("Failed to attach to namespace");
+        exit(1);
+    }
+    fclose(nsfile);
+    if(execvp(program, argv)) {
+        perror("Failed to execute");
+        exit(1);
+    }
+}
+
+int tn_execute_cmd(tn_cmd *cmd)
+{
+    tn_host *host = cmd->list->host;
+    int pid = fork();
+    if(!pid) {
+        // close(STDOUT_FILENO);
+        // fopen("/dev/null","w+");
+        command_exec(host->root->name, host->name, cmd->argv->args_v[0], cmd->argv->args_v);
+        return -1; // never reaches
+    } else {
+        return pid;
+    }
+}
+
+int tn_execute_lists(tn_root *root)
+{
+    tn_cmdlist **cmdlists_v = NULL, **c, *list;
+    tn_host **h;
+    tn_cmd *queue = NULL, *cmd = NULL;
+    int cpu_count = get_nprocs();
+    int proc_count = 0;
+    int pid, st, failure = 0;
+    char **buf;
+
+    vec_foreach(h, root->hosts_v) {
+        vec_foreach(c, (*h)->cmdlists_v) {
+            vec_push(cmdlists_v, *c);
+        }
+    }
+    vec_foreach(c, cmdlists_v) {
+        list = *c;
+        if(vec_len(list->cmds_v)) {
+            ll_bpush(queue, list->cmds_v[0]);
+            list->current_idx++;
+        }
+    }
+    while(proc_count || queue) {
+        while(proc_count < cpu_count && queue) {
+            proc_count++;
+            ll_fpop(queue, cmd);
+            cmd->list->current_pid = tn_execute_cmd(cmd);
+        }
+        pid = waitpid(0, &st, 0);
+        vec_foreach(c, cmdlists_v) {
+            list = *c;
+            if(list->current_pid == pid) {
+                cmd = list->cmds_v[list->current_idx-1];
+                if(WEXITSTATUS(st)) {
+                    int is_first = 1;
+                    failure = 1;
+                    fprintf(stderr, "Error: command '");
+                    vec_foreach(buf, cmd->argv->args_v) {
+                        if(!is_first) {
+                            fprintf(stderr, " ");
+                        }
+                        fprintf(stderr, "%s", *buf);
+                        is_first = 0;
+                    }
+                    fprintf(stderr, "' in host '%s' failed with status code '%d'", cmd->list->host->name, WEXITSTATUS(st));
+                }
+                proc_count--;
+                if(list->current_idx < vec_len(list->cmds_v)) {
+                    ll_bpush(queue, list->cmds_v[list->current_idx]);
+                    list->current_idx ++;
+                }
+                break;
+            }
+        }
+    }
+    return failure;
+}
+
+void assure_root_user()
+{
+    if(geteuid() != 0) {
+        fprintf(stderr,"tinynet requires root priviledges, run again as root");
+        exit(1);
+    }
+}
+
 /*
     - /run/tinynet
         - sim
@@ -582,6 +728,7 @@ typedef struct {
 
 void cli_list(tn_args args)
 {
+    assure_root_user();
     DIR *dir = opendir(NETNS_MOUNT_DIR);
     (void)args;
     if(dir) {
@@ -618,45 +765,15 @@ void cli_show(tn_args args)
 
 void cli_run(tn_args args)
 {
-    FILE *nsfile;
-    DIR *simdir;
-    char path_buf[512];
-    int len, pid = 0;
-        len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s", args.name);
-        simdir = opendir(path_buf);
-        if(!simdir) {
-            fprintf(stderr, "Simulation '%s' not found\n", args.name);
-            exit(1);
-        }
-        snprintf(path_buf + len, sizeof(path_buf) - len, "/hosts/%s", args.host);
-        nsfile = fopen(path_buf, "r");
-        if(!nsfile) {
-            fprintf(stderr, "Host '%s' in simulation '%s' not found\n", args.host, args.name);
-            exit(1);
-        }
-        if (setns(fileno(nsfile), CLONE_NEWNET) == -1) {
-            perror("Failed to attach to namespace");
-            exit(1);
-        }
-        fclose(nsfile);
-        if(execvp(args.run_program, args.run_argv)) {
-            perror("Failed to execute");
-            exit(1);
-        }
-    if(!pid) {
-    } else {
-        int st;
-        waitpid(pid, &st, 0);
-        if (WEXITSTATUS(st)) {
-            exit(WEXITSTATUS(st));
-        }
-    } 
+    assure_root_user();
+    command_exec(args.name, args.host, args.run_program, args.run_argv);
 }
 
 void cli_down(tn_args args)
 {
     FILE *lockfile;
     char path_buf[512];
+    assure_root_user();
     int len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s/hosts/", args.name);
     lockfile = tn_lock();
     DIR *dir = opendir(path_buf);
@@ -702,6 +819,7 @@ void cli_up(tn_args args)
     if(root->has_error) {
         exit(1);
     }
+    assure_root_user();
     nlsock = nl_socket_alloc();
     if(nl_connect(nlsock,NETLINK_ROUTE) != 0) {
         printf("Can't create rt_netlink socket\n");
@@ -739,6 +857,7 @@ void cli_up(tn_args args)
     vec_foreach(host, root->hosts_v) {
         tn_up_hosts(*host);
     }
+    tn_execute_lists(root);
     tn_unlock(lockfile);
     nl_close(nlsock);
     nl_socket_free(nlsock);
@@ -786,11 +905,6 @@ int main(int argc, char **argv)
       {0, 0, 0, 0}
     };
 
-    if(geteuid() != 0) {
-        fprintf(stderr,"tinynet requires root priviledges, run again as root");
-        return 1;
-    }
-
     args.path = NULL;
     args.name = NULL;
     args.host = NULL;
@@ -837,7 +951,7 @@ int main(int argc, char **argv)
     }
     
     if(args.operation == OP_UP) {
-        expect_arg("TOML file", path);
+        expect_arg("Topology file", path);
         cli_up(args);
     } else if(args.operation == OP_DOWN) {
         expect_arg("Simulation name", name);

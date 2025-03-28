@@ -29,6 +29,8 @@ typedef struct tn_vm_value_t {
     int type;
 } tn_vm_value;
 
+typedef int(*tn_attribute_setter_cb)(tn_vm_entity_header*, tn_vm_value);
+
 typedef struct tn_entity_attribute_t {
     int index;
     const char *name;
@@ -38,13 +40,13 @@ typedef struct tn_entity_attribute_t {
     int name_unicity;
     int is_name;
     int (*validator)(tn_vm_entity_header*, tn_vm_value);
-    int (*setter)(tn_vm_entity_header*, tn_vm_value);
+    tn_attribute_setter_cb setter;
 } tn_entity_attribute;
 
 typedef struct tn_entity_option_t {
     int index;
     const char *name;
-    void (*setter)(tn_vm_entity_header*, tn_vm_value);
+    tn_attribute_setter_cb setter;
 } tn_entity_option;
 
 typedef struct tn_entity_t {
@@ -87,8 +89,10 @@ void tn_vm_run(tn_vm *vm);
 tn_vm *tn_vm_create();
 uint32_t tn_vm_add_constant(tn_vm *vm, tn_vm_value val);
 
+#define ENTITY_CREATOR(NAME) __##NAME##_create
+
 #define TN_REGISTER_ENTITY_ALIAS(STRUCT,NAME,LITERAL)\
-tn_vm_entity_header *__##NAME##_create();\
+tn_vm_entity_header *ENTITY_CREATOR(NAME)();\
 void __##NAME##_init(STRUCT *self);\
 tn_entity __##NAME##_entity_descriptor = {\
     .name = LITERAL,\
@@ -102,7 +106,7 @@ static void __##NAME##_descriptor_insert() {\
     __##NAME##_entity_descriptor.index = vec_len(tn_entities);\
     vec_push(tn_entities, &__##NAME##_entity_descriptor);\
 }\
-tn_vm_entity_header *__##NAME##_create()\
+tn_vm_entity_header *ENTITY_CREATOR(NAME)()\
 {\
     tn_vm_entity_header *obj = malloc(sizeof(STRUCT));\
     obj->options = 0;\
@@ -132,7 +136,7 @@ static void __##ENTITY##_##NAME##_descriptor_insert() {\
         .mandatory= ((FLAGS) & TN_ATTR_FLAG_MANDATORY),\
         .name_unicity=((FLAGS) & TN_ATTR_FLAG_NAME_UNICITY),\
         .validator=NULL,\
-        .setter=__##ENTITY##_##NAME##_setter,\
+        .setter=(tn_attribute_setter_cb) __##ENTITY##_##NAME##_setter,\
     };\
     tn_attr_descriptor.index = vec_len(__##ENTITY##_entity_descriptor.attrs_v);\
     vec_push(__##ENTITY##_entity_descriptor.attrs_v, tn_attr_descriptor);\
