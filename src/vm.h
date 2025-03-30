@@ -124,10 +124,10 @@ void __##NAME##_init(STRUCT *self)
 #define TN_ATTR_FLAG_ONLY_ONCE 0x02
 #define TN_ATTR_FLAG_NAME_UNICITY 0x04
 
-#define TN_REGISTER_ATTRIBUTE(ENTITY,NAME,LITERAL,TYPE,FLAGS)\
-static int __##ENTITY##_##NAME##_setter(ENTITY* ent, tn_vm_value val);\
+#define TN_REGISTER_ALIAS_ATTRIBUTE(ENTITY,ALIAS,NAME,LITERAL,TYPE,FLAGS)\
+static int __##ALIAS##_##NAME##_setter(ENTITY* ent, tn_vm_value val);\
 __attribute__((constructor))\
-static void __##ENTITY##_##NAME##_descriptor_insert() {\
+static void __##ALIAS##_##NAME##_descriptor_insert() {\
     tn_entity_attribute tn_attr_descriptor = {\
         .name=LITERAL,\
         .type=TYPE,\
@@ -136,12 +136,14 @@ static void __##ENTITY##_##NAME##_descriptor_insert() {\
         .mandatory= ((FLAGS) & TN_ATTR_FLAG_MANDATORY),\
         .name_unicity=((FLAGS) & TN_ATTR_FLAG_NAME_UNICITY),\
         .validator=NULL,\
-        .setter=(tn_attribute_setter_cb) __##ENTITY##_##NAME##_setter,\
+        .setter=(tn_attribute_setter_cb) __##ALIAS##_##NAME##_setter,\
     };\
-    tn_attr_descriptor.index = vec_len(__##ENTITY##_entity_descriptor.attrs_v);\
-    vec_push(__##ENTITY##_entity_descriptor.attrs_v, tn_attr_descriptor);\
+    tn_attr_descriptor.index = vec_len(__##ALIAS##_entity_descriptor.attrs_v);\
+    vec_push(__##ALIAS##_entity_descriptor.attrs_v, tn_attr_descriptor);\
 }\
-static int __##ENTITY##_##NAME##_setter(ENTITY* ent, tn_vm_value val)
+static int __##ALIAS##_##NAME##_setter(ENTITY* ent, tn_vm_value val)
+
+#define TN_REGISTER_ATTRIBUTE(ENTITY,NAME,LITERAL,TYPE,FLAGS) TN_REGISTER_ALIAS_ATTRIBUTE(ENTITY,ENTITY,NAME,LITERAL,TYPE,FLAGS)
 
 #define TN_REGISTER_OPTION(ENTITY,NAME)\
 __attribute__((constructor))\

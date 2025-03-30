@@ -4,7 +4,7 @@ host h1 {
         ip 10.0.0.10/24
     }
 
-    cmd {
+    test simple-ping-test {
         line "ping 10.0.1.13 -c 1 -w 2"
         line "ping 10.0.0.12 -c 1 -w 2"
     }

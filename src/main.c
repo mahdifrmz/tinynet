@@ -27,6 +27,15 @@
 #include "parse.h"
 #include "vm.h"
 
+#define COLOR_RED   "\x1B[31m"
+#define COLOR_GREEN   "\x1B[32m"
+#define COLOR_YELLOW   "\x1B[33m"
+#define COLOR_BLUE   "\x1B[34m"
+#define COLOR_MAGENTA   "\x1B[35m"
+#define COLOR_CYAN   "\x1B[36m"
+#define COLOR_WHITE   "\x1B[37m"
+#define COLOR_RESET "\x1B[0m"
+
 #define NETNS_MOUNT_DIR "/run/tinynet/sim"
 #define LOCKFILE_PATH "/run/tinynet/lock"
 
@@ -107,20 +116,16 @@ struct tn_cmdlist_t {
     tn_vm_entity_header header;
     tn_host *host;
     tn_cmd **cmds_v;
+    char *name;
     int current_idx;
     int current_pid;
+    int is_test;
 };
-TN_REGISTER_ENTITY(tn_cmdlist, "cmd")
-{
-    self->current_pid = 0;
-    self->current_idx = 0;
-    self->cmds_v = NULL;
-}
-TN_REGISTER_ATTRIBUTE(tn_cmdlist, line, "line", TN_VM_TYPE_STRING, 0)
+void tn_cmdlist_set_line(tn_cmdlist *list, char *str)
 {
     char *buf = NULL;
     tn_cmdargv *argv = (tn_cmdargv*)ENTITY_CREATOR(tn_cmdargv)();
-    for(char *p = val.as.string;; p++)
+    for(char *p = str;; p++)
     {
         if (*p == 0 || *p == ' ') {
             if(vec_len(buf)) {
@@ -136,10 +141,42 @@ TN_REGISTER_ATTRIBUTE(tn_cmdlist, line, "line", TN_VM_TYPE_STRING, 0)
     }
     tn_cmd *cmd = (tn_cmd *)ENTITY_CREATOR(tn_cmd)();
     cmd->argv = argv;
-    cmd->list = ent;
-    vec_push(ent->cmds_v, cmd);
+    cmd->list = list;
+    vec_push(list->cmds_v, cmd);
+}
+TN_REGISTER_ENTITY(tn_cmdlist, "cmd")
+{
+    self->current_pid = 0;
+    self->current_idx = 0;
+    self->cmds_v = NULL;
+    self->is_test = 0;
+    self->name = NULL;
+}
+TN_REGISTER_ATTRIBUTE(tn_cmdlist, line, "line", TN_VM_TYPE_STRING, 0)
+{
+    tn_cmdlist_set_line(ent, val.as.string);
     return 0;
 }
+
+TN_REGISTER_ENTITY_ALIAS(tn_cmdlist, tn_testlist, "test")
+{
+    self->current_pid = 0;
+    self->current_idx = 0;
+    self->cmds_v = NULL;
+    self->is_test = 1;
+    self->name = NULL;
+}
+TN_REGISTER_ALIAS_ATTRIBUTE(tn_cmdlist, tn_testlist, line, "line", TN_VM_TYPE_STRING, 0)
+{
+    tn_cmdlist_set_line(ent, val.as.string);
+    return 0;
+}
+TN_REGISTER_ALIAS_ATTRIBUTE(tn_cmdlist, tn_testlist, name, "name", TN_VM_TYPE_STRING, TN_ATTR_FLAG_MANDATORY)
+{
+    ent->name = val.as.string;
+    return 0;
+}
+
 
 struct tn_intf_t {
     tn_vm_entity_header header;
@@ -232,6 +269,14 @@ TN_REGISTER_ATTRIBUTE(tn_host,cmd,"cmd",TN_VM_TYPE_ENTITY,0)
     return 0;
 }
 
+TN_REGISTER_ATTRIBUTE(tn_host,test,"test",TN_VM_TYPE_ENTITY,0)
+{
+    tn_cmdlist *cmdlist = (tn_cmdlist *)val.as.entity;
+    cmdlist->host = ent;
+    vec_push(ent->cmdlists_v, cmdlist);
+    return 0;
+}
+
 struct tn_root_t {
     tn_vm_entity_header header;
     uint32_t checksum;
@@ -265,6 +310,17 @@ typedef struct {
     char **run_argv;
     int run_argc;
 } tn_args;
+
+enum {
+    OP_UNKNOWN,
+    OP_UP,
+    OP_DOWN,
+    OP_LIST,
+    OP_RUN,
+    OP_SHOW,
+    OP_PARSE,
+    OP_TEST
+};
 
 tn_host *tn_lookup_host(tn_root *root, const char *name) {
     tn_host **host;
@@ -369,6 +425,7 @@ tn_root *tn_eval(const char *file_path) {
     tn_root *root;
     if(!file) {
         fprintf(stderr, "failed to open file: %s\n", file_path);
+        exit(1);
     } else {
         tn_vm *vm = tncfg_parse(file);
         tn_vm_run(vm);
@@ -645,11 +702,15 @@ int tn_execute_lists_verbose(tn_root *root, tn_args *args)
     tn_host **h, *host;
     tn_cmdlist **l, *list;
     tn_cmd **c, *cmd;
-    int pid, st, failure = 0;
+    int pid, st, failure = 0, list_failure;
     vec_foreach(h, root->hosts_v) {
         host = *h;
         vec_foreach(l, host->cmdlists_v) {
             list = *l;
+            if(list->is_test != (args->operation == OP_TEST)) {
+                continue;
+            }
+            list_failure = 0;
             vec_foreach(c, list->cmds_v) {
                 cmd = *c;
                 pid = tn_execute_cmd(cmd,args);
@@ -657,7 +718,15 @@ int tn_execute_lists_verbose(tn_root *root, tn_args *args)
                 if(WEXITSTATUS(st)) {
                     failure = 1;
                     print_command_error(cmd, st);
+                    list_failure = 1;
                     break;
+                }
+            }
+            if(list->is_test) {
+                if(list_failure) {
+                    fprintf(stderr, "TinyNet: test '%s'" COLOR_RED " failed.\n" COLOR_RESET, list->name);
+                } else {
+                    fprintf(stderr, "TinyNet: test '%s'" COLOR_GREEN " passed.\n" COLOR_RESET, list->name);
                 }
             }
         }
@@ -676,7 +745,10 @@ int tn_execute_lists(tn_root *root, tn_args *args)
 
     vec_foreach(h, root->hosts_v) {
         vec_foreach(c, (*h)->cmdlists_v) {
-            vec_push(cmdlists_v, *c);
+            list = *c;
+            if (list->is_test == (args->operation == OP_TEST)) {
+                vec_push(cmdlists_v, *c);
+            }
         }
     }
     vec_foreach(c, cmdlists_v) {
@@ -701,10 +773,17 @@ int tn_execute_lists(tn_root *root, tn_args *args)
                 if(WEXITSTATUS(st)) {
                     failure = 1;
                     print_command_error(cmd, st);
+                    if (list->is_test) {
+                        fprintf(stderr, "TinyNet: test '%s'" COLOR_RED " failed.\n" COLOR_RESET, list->name);
+                    }
                 } else {
                     if(list->current_idx < vec_len(list->cmds_v)) {
                         ll_bpush(queue, list->cmds_v[list->current_idx]);
                         list->current_idx ++;
+                    } else {
+                        if (list->is_test) {
+                            fprintf(stderr, "TinyNet: test '%s'" COLOR_GREEN " passed.\n" COLOR_RESET, list->name);
+                        }
                     }
                 }
                 break;
@@ -761,16 +840,6 @@ void tn_unlock(FILE *lockfile)
     lockf(fileno(lockfile), F_ULOCK, 0);
     fclose(lockfile);
 }
-
-enum {
-    OP_UNKNOWN,
-    OP_UP,
-    OP_DOWN,
-    OP_LIST,
-    OP_RUN,
-    OP_SHOW,
-    OP_PARSE
-};
 
 void cli_list(tn_args args)
 {
@@ -911,13 +980,14 @@ void cli_up(tn_args args)
     tn_unlock(lockfile);
     nl_close(nlsock);
     nl_socket_free(nlsock);
-    if(!args.name) {
+    if(args.operation == OP_UP && !args.name && args.operation != OP_TEST && !failure) {
         printf("%s\n", root->name);
     }
-    if(failure) {
+    if(failure || args.operation == OP_TEST) {
+        args.name = root->name;
         cli_down(args);
-        exit(1);
     }
+    exit(failure);
 }
 
 void print_help()
@@ -936,6 +1006,8 @@ void print_help()
 int parse_op(const char *str) {
     if(!strcmp(str,"up"))
         return OP_UP;
+    if(!strcmp(str,"test"))
+        return OP_TEST;
     if(!strcmp(str,"down"))
         return OP_DOWN;
     if(!strcmp(str,"run"))
@@ -1009,6 +1081,9 @@ int main(int argc, char **argv)
     }
     
     if(args.operation == OP_UP) {
+        expect_arg("Topology file", path);
+        cli_up(args);
+    } else if(args.operation == OP_TEST) {
         expect_arg("Topology file", path);
         cli_up(args);
     } else if(args.operation == OP_DOWN) {
