@@ -4,6 +4,11 @@ host h1 {
         ip 10.0.0.10/24
     }
 
+    cmd {
+        line "ping 10.0.1.13 -c 1 -w 2"
+        line "ping 10.0.0.12 -c 1 -w 2"
+    }
+
     iface eth2 {
         peer h3/eth1
         ip 10.0.1.11/24

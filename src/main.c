@@ -20,6 +20,7 @@
 #include <netlink/route/link.h>
 #include <netlink/route/addr.h>
 #include <netlink/route/link/veth.h>
+#include <fcntl.h>
 #include <assert.h>
 #include "ll.h"
 #include "vec.h"
@@ -253,6 +254,17 @@ TN_REGISTER_ATTRIBUTE(tn_root,host,"host",TN_VM_TYPE_ENTITY,
     vec_push(root->hosts_v, host);
     return 0;
 }
+
+typedef struct {
+    int operation;
+    int verbose;
+    char *path;
+    char *name;
+    char *host;
+    char *run_program;
+    char **run_argv;
+    int run_argc;
+} tn_args;
 
 tn_host *tn_lookup_host(tn_root *root, const char *name) {
     tn_host **host;
@@ -580,19 +592,28 @@ void command_exec(const char *sim_name, const char *host_name, char *program, ch
         exit(1);
     }
     fclose(nsfile);
-    if(execvp(program, argv)) {
-        perror("Failed to execute");
-        exit(1);
-    }
+    execvp(program, argv);
+    exit(127);
 }
 
-int tn_execute_cmd(tn_cmd *cmd)
+void close_fd(int fd)
+{
+    int new_fd = fd;
+    do {
+        close(new_fd);
+        new_fd = open("/dev/null", O_WRONLY);
+    } while(new_fd != fd);
+}
+
+int tn_execute_cmd(tn_cmd *cmd, tn_args *args)
 {
     tn_host *host = cmd->list->host;
     int pid = fork();
     if(!pid) {
-        // close(STDOUT_FILENO);
-        // fopen("/dev/null","w+");
+        if (!args->verbose) {
+            close_fd(STDOUT_FILENO);
+            close_fd(STDERR_FILENO);
+        }
         command_exec(host->root->name, host->name, cmd->argv->args_v[0], cmd->argv->args_v);
         return -1; // never reaches
     } else {
@@ -600,7 +621,51 @@ int tn_execute_cmd(tn_cmd *cmd)
     }
 }
 
-int tn_execute_lists(tn_root *root)
+void print_command_error(tn_cmd *cmd, int st)
+{
+    char **buf;
+    int is_first = 1;
+    fprintf(stderr, "TinyNet: command '");
+    vec_foreach(buf, cmd->argv->args_v) {
+        if(!is_first) {
+            fprintf(stderr, " ");
+        }
+        fprintf(stderr, "%s", *buf);
+        is_first = 0;
+    }
+    if(WEXITSTATUS(st) == 127) {
+        fprintf(stderr, "' in host '%s' does not exist\n", cmd->list->host->name);
+    } else {
+        fprintf(stderr, "' in host '%s' failed with status code '%d'\n", cmd->list->host->name, WEXITSTATUS(st));
+    }
+}
+
+int tn_execute_lists_verbose(tn_root *root, tn_args *args)
+{
+    tn_host **h, *host;
+    tn_cmdlist **l, *list;
+    tn_cmd **c, *cmd;
+    int pid, st, failure = 0;
+    vec_foreach(h, root->hosts_v) {
+        host = *h;
+        vec_foreach(l, host->cmdlists_v) {
+            list = *l;
+            vec_foreach(c, list->cmds_v) {
+                cmd = *c;
+                pid = tn_execute_cmd(cmd,args);
+                waitpid(pid,&st,0);
+                if(WEXITSTATUS(st)) {
+                    failure = 1;
+                    print_command_error(cmd, st);
+                    break;
+                }
+            }
+        }
+    }
+    return failure;
+}
+
+int tn_execute_lists(tn_root *root, tn_args *args)
 {
     tn_cmdlist **cmdlists_v = NULL, **c, *list;
     tn_host **h;
@@ -608,7 +673,6 @@ int tn_execute_lists(tn_root *root)
     int cpu_count = get_nprocs();
     int proc_count = 0;
     int pid, st, failure = 0;
-    char **buf;
 
     vec_foreach(h, root->hosts_v) {
         vec_foreach(c, (*h)->cmdlists_v) {
@@ -626,30 +690,22 @@ int tn_execute_lists(tn_root *root)
         while(proc_count < cpu_count && queue) {
             proc_count++;
             ll_fpop(queue, cmd);
-            cmd->list->current_pid = tn_execute_cmd(cmd);
+            cmd->list->current_pid = tn_execute_cmd(cmd,args);
         }
-        pid = waitpid(0, &st, 0);
+        pid = wait(&st);
         vec_foreach(c, cmdlists_v) {
             list = *c;
             if(list->current_pid == pid) {
                 cmd = list->cmds_v[list->current_idx-1];
-                if(WEXITSTATUS(st)) {
-                    int is_first = 1;
-                    failure = 1;
-                    fprintf(stderr, "Error: command '");
-                    vec_foreach(buf, cmd->argv->args_v) {
-                        if(!is_first) {
-                            fprintf(stderr, " ");
-                        }
-                        fprintf(stderr, "%s", *buf);
-                        is_first = 0;
-                    }
-                    fprintf(stderr, "' in host '%s' failed with status code '%d'", cmd->list->host->name, WEXITSTATUS(st));
-                }
                 proc_count--;
-                if(list->current_idx < vec_len(list->cmds_v)) {
-                    ll_bpush(queue, list->cmds_v[list->current_idx]);
-                    list->current_idx ++;
+                if(WEXITSTATUS(st)) {
+                    failure = 1;
+                    print_command_error(cmd, st);
+                } else {
+                    if(list->current_idx < vec_len(list->cmds_v)) {
+                        ll_bpush(queue, list->cmds_v[list->current_idx]);
+                        list->current_idx ++;
+                    }
                 }
                 break;
             }
@@ -715,16 +771,6 @@ enum {
     OP_SHOW,
     OP_PARSE
 };
-
-typedef struct {
-    int operation;
-    char *path;
-    char *name;
-    char *host;
-    char *run_program;
-    char **run_argv;
-    int run_argc;
-} tn_args;
 
 void cli_list(tn_args args)
 {
@@ -812,7 +858,7 @@ void cli_up(tn_args args)
     struct nl_sock *nlsock;
     tn_root *root;
     FILE *lockfile;
-    int err, len;
+    int err, len, failure;
     char buf[64];
 
     root = tn_eval(args.path);
@@ -857,12 +903,20 @@ void cli_up(tn_args args)
     vec_foreach(host, root->hosts_v) {
         tn_up_hosts(*host);
     }
-    tn_execute_lists(root);
+    if(args.verbose) {
+        failure = tn_execute_lists_verbose(root, &args);
+    } else {
+        failure = tn_execute_lists(root, &args);
+    }
     tn_unlock(lockfile);
     nl_close(nlsock);
     nl_socket_free(nlsock);
     if(!args.name) {
-        fprintf(stderr,"%s\n", root->name);
+        printf("%s\n", root->name);
+    }
+    if(failure) {
+        cli_down(args);
+        exit(1);
     }
 }
 
@@ -911,6 +965,7 @@ int main(int argc, char **argv)
     args.run_program = NULL;
     args.run_argv = NULL;
     args.run_argc = 0;
+    args.verbose = 0;
 
     if(argc == 1) {
         print_help();
@@ -926,7 +981,7 @@ int main(int argc, char **argv)
     argc--;
 
     while(1) {
-        c = getopt_long(argc, argv, "n:", long_options, &option_index);
+        c = getopt_long(argc, argv, "Vn:", long_options, &option_index);
         if (c == -1)
             break;
         switch(c) {
@@ -934,6 +989,9 @@ int main(int argc, char **argv)
                 break;
             case 'n':
                 args.name = optarg;
+                break;
+            case 'V':
+                args.verbose = 1;
                 break;
             default:
                 fprintf(stderr, "Unknown option: '-%c'\n", c);
