@@ -30,6 +30,7 @@ typedef struct tn_vm_value_t {
 } tn_vm_value;
 
 typedef int(*tn_attribute_setter_cb)(tn_vm_entity_header*, tn_vm_value);
+typedef int(*tn_option_setter_cb)(tn_vm_entity_header*);
 
 typedef struct tn_entity_attribute_t {
     int index;
@@ -46,7 +47,7 @@ typedef struct tn_entity_attribute_t {
 typedef struct tn_entity_option_t {
     int index;
     const char *name;
-    tn_attribute_setter_cb setter;
+    tn_option_setter_cb setter;
 } tn_entity_option;
 
 typedef struct tn_entity_t {
@@ -145,16 +146,17 @@ static int __##ALIAS##_##NAME##_setter(ENTITY* ent, tn_vm_value val)
 
 #define TN_REGISTER_ATTRIBUTE(ENTITY,NAME,LITERAL,TYPE,FLAGS) TN_REGISTER_ALIAS_ATTRIBUTE(ENTITY,ENTITY,NAME,LITERAL,TYPE,FLAGS)
 
-#define TN_REGISTER_OPTION(ENTITY,NAME)\
+#define TN_REGISTER_OPTION(ENTITY,NAME,LITERAL)\
+static int __##ENTITY##_##NAME##_setter(ENTITY* ent);\
 __attribute__((constructor))\
 static void __##ENTITY##_##NAME##_descriptor_insert() {\
     tn_entity_option tn_opt_descriptor = {\
-        .name=#NAME,\
-        .setter=__##ENTITY##_##NAME##_setter,\
+        .name=LITERAL,\
+        .setter=(tn_option_setter_cb) __##ENTITY##_##NAME##_setter,\
     };\
     tn_opt_descriptor.index = vec_len(__##ENTITY##_entity_descriptor.options_v);\
-    vec_push(__##NAME##_entity_descriptor.options_v, tn_opt_descriptor);\
+    vec_push(__##ENTITY##_entity_descriptor.options_v, tn_opt_descriptor);\
 }\
-static void __##ENTITY##_##NAME##_setter(ENTITY* ent)
+static int __##ENTITY##_##NAME##_setter(ENTITY* ent)
 
 #endif

@@ -89,6 +89,11 @@ TN_REGISTER_ENTITY(tn_cmdargv, "argv")
 {
     self->args_v = NULL;
 }
+TN_REGISTER_ATTRIBUTE(tn_cmdargv, element, "-", TN_VM_TYPE_STRING, 0)
+{
+    vec_push(ent->args_v, val.as.string);
+    return 0;
+}
 
 struct tn_cmd_t {
     tn_vm_entity_header header;
@@ -97,19 +102,34 @@ struct tn_cmd_t {
     tn_cmdlist *list;
     int is_daemon;
     tn_cmdargv *argv;
-    char *expected_stdout;
-    char *expected_stderr;
     int expected_status;
 };
 TN_REGISTER_ENTITY(tn_cmd, "exec")
 {
     self->argv = NULL;
     self->expected_status = 0;
-    self->expected_stdout = NULL;
-    self->expected_stderr = NULL;
-    self->ll_next = self->ll_prev;
+    self->ll_next = self->ll_prev = NULL;
     self->list = NULL;
     self->is_daemon = 0;
+}
+TN_REGISTER_ATTRIBUTE(tn_cmd, argv, "argv", TN_VM_TYPE_ENTITY, 
+    TN_ATTR_FLAG_ONLY_ONCE | TN_ATTR_FLAG_MANDATORY)
+{
+    tn_cmdargv *argv = (tn_cmdargv*)val.as.entity;
+    vec_push(argv->args_v, NULL);
+    ent->argv = argv;
+    return 0;
+}
+TN_REGISTER_ATTRIBUTE(tn_cmd, expected_status, "expect-status", TN_VM_TYPE_INTEGER, 
+    TN_ATTR_FLAG_ONLY_ONCE)
+{
+    ent->expected_status = val.as.integer;
+    return 0;
+}
+TN_REGISTER_OPTION(tn_cmd, isdaemon, "daemon")
+{
+    ent->is_daemon = 1;
+    return 0;
 }
 
 struct tn_cmdlist_t {
@@ -129,6 +149,7 @@ void tn_cmdlist_set_line(tn_cmdlist *list, char *str)
     {
         if (*p == 0 || *p == ' ') {
             if(vec_len(buf)) {
+                vec_push(buf, 0);
                 vec_push(argv->args_v, buf);
                 buf = NULL;
             }
@@ -139,6 +160,7 @@ void tn_cmdlist_set_line(tn_cmdlist *list, char *str)
             vec_push(buf, *p);
         }
     }
+    vec_push(argv->args_v, NULL);
     tn_cmd *cmd = (tn_cmd *)ENTITY_CREATOR(tn_cmd)();
     cmd->argv = argv;
     cmd->list = list;
@@ -155,6 +177,13 @@ TN_REGISTER_ENTITY(tn_cmdlist, "cmd")
 TN_REGISTER_ATTRIBUTE(tn_cmdlist, line, "line", TN_VM_TYPE_STRING, 0)
 {
     tn_cmdlist_set_line(ent, val.as.string);
+    return 0;
+}
+TN_REGISTER_ATTRIBUTE(tn_cmdlist, exec, "exec", TN_VM_TYPE_ENTITY, 0)
+{
+    tn_cmd *cmd = (tn_cmd *)val.as.entity;
+    cmd->list = ent;
+    vec_push(ent->cmds_v, cmd);
     return 0;
 }
 
@@ -174,6 +203,13 @@ TN_REGISTER_ALIAS_ATTRIBUTE(tn_cmdlist, tn_testlist, line, "line", TN_VM_TYPE_ST
 TN_REGISTER_ALIAS_ATTRIBUTE(tn_cmdlist, tn_testlist, name, "name", TN_VM_TYPE_STRING, TN_ATTR_FLAG_MANDATORY)
 {
     ent->name = val.as.string;
+    return 0;
+}
+TN_REGISTER_ALIAS_ATTRIBUTE(tn_cmdlist, tn_testlist, exec, "exec", TN_VM_TYPE_ENTITY, 0)
+{
+    tn_cmd *cmd = (tn_cmd *)val.as.entity;
+    cmd->list = ent;
+    vec_push(ent->cmds_v, cmd);
     return 0;
 }
 
@@ -684,6 +720,9 @@ void print_command_error(tn_cmd *cmd, int st)
     int is_first = 1;
     fprintf(stderr, "TinyNet: command '");
     vec_foreach(buf, cmd->argv->args_v) {
+        if(!*buf) {
+            break;
+        }
         if(!is_first) {
             fprintf(stderr, " ");
         }

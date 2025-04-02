@@ -59,7 +59,7 @@ void tn_vm_opcode_set_attr(tn_vm *vm, tn_vm_bytecode bc) {
         return;
     }
     if(attr.is_name) {
-        val.as.entity->name = val.as.string;
+        parent.as.entity->name = val.as.string;
     }
     parent.as.entity->flags |= (1 << attr.index);
 }
@@ -83,13 +83,22 @@ void tn_vm_run(tn_vm *vm)
                 break;
             case TN_VM_OPCODE_SET_OPTION:
                 tn_vm_value ent;
+                tn_entity_option *opt;
                 vec_pop(vm->stack_v, ent);
+                opt = &ent.as.entity->entity->options_v[bc.arg];
                 if ((1 << bc.arg) & ent.as.entity->options) {
                     fprintf(stderr,"Error: option '%s' already set (line: %d,column: %d)\n",
-                        ent.as.entity->entity->options_v[bc.arg].name, bc.line, bc.column);
+                        opt->name, bc.line, bc.column);
                     vm->has_error = 1;
                 } else {
-                    ent.as.entity->options |= (1 << bc.arg);
+                    if(opt->setter(ent.as.entity))
+                    {
+                        fprintf(stderr,"Error: Option '%s' could not be set (line: %d,column: %d)\n",
+                            opt->name, bc.line, bc.column);
+                            vm->has_error = 1;
+                    } else {
+                        ent.as.entity->options |= (1 << bc.arg);
+                    }
                 }
                 vec_push(vm->stack_v, ent);
                 break;

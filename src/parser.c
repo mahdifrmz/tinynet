@@ -295,23 +295,25 @@ void parseOpt(Parser *parser, tn_entity *ent)
     nextToken(parser);
     if(parser->currentToken.type != TOK_IDENT) {
         expect(parser,TOK_IDENT);
-    }
-    tn_entity_option *opt = vec_end(ent->options_v);
-    vec_foreach(opt, ent->options_v) {
-        if(!strcmp(opt->name, parser->currentToken.text)) {
-            break;
-        }
-    }
-    if(opt == vec_end(ent->options_v)) {
-        fprintf(stderr,"Entity %s has no option '%s'.\n", ent->name, parser->currentToken.text);
-        exit(1);
     } else {
-        tn_vm_bytecode bc;
-        bc.opcode = TN_VM_OPCODE_SET_OPTION;
-        bc.arg = opt->index;
-        bc.line = parser->currentToken.line;
-        bc.column = parser->currentToken.column;
-        vec_push(parser->vm->prog_v, bc);
+        tn_entity_option *opt = vec_end(ent->options_v);
+        vec_foreach(opt, ent->options_v) {
+            if(!strcmp(opt->name, parser->currentToken.text)) {
+                break;
+            }
+        }
+        if(opt == vec_end(ent->options_v)) {
+            fprintf(stderr,"Entity %s has no option '%s'.\n", ent->name, parser->currentToken.text);
+            exit(1);
+        } else {
+            tn_vm_bytecode bc;
+            bc.opcode = TN_VM_OPCODE_SET_OPTION;
+            bc.arg = opt->index;
+            bc.line = parser->currentToken.line;
+            bc.column = parser->currentToken.column;
+            vec_push(parser->vm->prog_v, bc);
+        }
+        nextToken(parser);
     }
 }
 
