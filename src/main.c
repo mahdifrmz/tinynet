@@ -697,7 +697,7 @@ void print_command_error(tn_cmd *cmd, int st)
     }
 }
 
-int tn_execute_lists_verbose(tn_root *root, tn_args *args)
+int tn_execute_lists_sequential(tn_root *root, tn_args *args, int is_test_run)
 {
     tn_host **h, *host;
     tn_cmdlist **l, *list;
@@ -707,7 +707,7 @@ int tn_execute_lists_verbose(tn_root *root, tn_args *args)
         host = *h;
         vec_foreach(l, host->cmdlists_v) {
             list = *l;
-            if(list->is_test != (args->operation == OP_TEST)) {
+            if(list->is_test != is_test_run) {
                 continue;
             }
             list_failure = 0;
@@ -734,7 +734,7 @@ int tn_execute_lists_verbose(tn_root *root, tn_args *args)
     return failure;
 }
 
-int tn_execute_lists(tn_root *root, tn_args *args)
+int tn_execute_lists_parallel(tn_root *root, tn_args *args, int is_test_run)
 {
     tn_cmdlist **cmdlists_v = NULL, **c, *list;
     tn_host **h;
@@ -746,7 +746,7 @@ int tn_execute_lists(tn_root *root, tn_args *args)
     vec_foreach(h, root->hosts_v) {
         vec_foreach(c, (*h)->cmdlists_v) {
             list = *c;
-            if (list->is_test == (args->operation == OP_TEST)) {
+            if (list->is_test == is_test_run) {
                 vec_push(cmdlists_v, *c);
             }
         }
@@ -973,9 +973,15 @@ void cli_up(tn_args args)
         tn_up_hosts(*host);
     }
     if(args.verbose) {
-        failure = tn_execute_lists_verbose(root, &args);
+        failure = tn_execute_lists_sequential(root, &args, 0);
+        if(args.operation == OP_TEST) {
+            failure = tn_execute_lists_sequential(root, &args, 1);
+        }
     } else {
-        failure = tn_execute_lists(root, &args);
+        failure = tn_execute_lists_parallel(root, &args, 0);
+        if(args.operation == OP_TEST) {
+            failure = tn_execute_lists_parallel(root, &args, 1);
+        }
     }
     tn_unlock(lockfile);
     nl_close(nlsock);
