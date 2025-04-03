@@ -753,12 +753,14 @@ int tn_execute_lists_sequential(tn_root *root, tn_args *args, int is_test_run)
             vec_foreach(c, list->cmds_v) {
                 cmd = *c;
                 pid = tn_execute_cmd(cmd,args);
-                waitpid(pid,&st,0);
-                if(WEXITSTATUS(st)) {
-                    failure = 1;
-                    print_command_error(cmd, st);
-                    list_failure = 1;
-                    break;
+                if(!cmd->is_daemon) {
+                    waitpid(pid,&st,0);
+                    if(WEXITSTATUS(st) != cmd->expected_status) {
+                        failure = 1;
+                        print_command_error(cmd, st);
+                        list_failure = 1;
+                        break;
+                    }
                 }
             }
             if(list->is_test) {
@@ -799,9 +801,23 @@ int tn_execute_lists_parallel(tn_root *root, tn_args *args, int is_test_run)
     }
     while(proc_count || queue) {
         while(proc_count < cpu_count && queue) {
-            proc_count++;
             ll_fpop(queue, cmd);
             cmd->list->current_pid = tn_execute_cmd(cmd,args);
+            if (cmd->is_daemon) {
+                if(list->current_idx < vec_len(list->cmds_v)) {
+                    ll_bpush(queue, list->cmds_v[list->current_idx]);
+                    list->current_idx ++;
+                } else {
+                    if (list->is_test) {
+                        fprintf(stderr, "TinyNet: test '%s'" COLOR_GREEN " passed.\n" COLOR_RESET, list->name);
+                    }
+                }
+            } else {
+                proc_count++;
+            }
+        }
+        if(!proc_count) {
+            break;
         }
         pid = wait(&st);
         vec_foreach(c, cmdlists_v) {
@@ -809,7 +825,7 @@ int tn_execute_lists_parallel(tn_root *root, tn_args *args, int is_test_run)
             if(list->current_pid == pid) {
                 cmd = list->cmds_v[list->current_idx-1];
                 proc_count--;
-                if(WEXITSTATUS(st)) {
+                if(WEXITSTATUS(st) != cmd->expected_status) {
                     failure = 1;
                     print_command_error(cmd, st);
                     if (list->is_test) {
