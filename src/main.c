@@ -318,12 +318,14 @@ struct tn_root_t {
     uint32_t checksum;
     char name[MAX_SIM_NAME];
     int has_error;
+    FILE *pid_file;
     tn_host **hosts_v;
 };
 TN_REGISTER_ENTITY(tn_root,"root")
 {
     self->hosts_v = NULL;
     self->has_error = 0;
+    self->pid_file = NULL;
 }
 
 TN_REGISTER_ATTRIBUTE(tn_root,host,"host",TN_VM_TYPE_ENTITY,
@@ -698,7 +700,7 @@ void close_fd(int fd)
     } while(new_fd != fd);
 }
 
-int tn_execute_cmd(tn_cmd *cmd, tn_args *args)
+int tn_execute_cmd(tn_root *root, tn_cmd *cmd, tn_args *args)
 {
     tn_host *host = cmd->list->host;
     int pid = fork();
@@ -706,6 +708,9 @@ int tn_execute_cmd(tn_cmd *cmd, tn_args *args)
         if (!args->verbose) {
             close_fd(STDOUT_FILENO);
             close_fd(STDERR_FILENO);
+        }
+        if(cmd->is_daemon) {
+            setsid();
         }
         command_exec(host->root->name, host->name, cmd->argv->args_v[0], cmd->argv->args_v);
         return -1; // never reaches
@@ -752,7 +757,7 @@ int tn_execute_lists_sequential(tn_root *root, tn_args *args, int is_test_run)
             list_failure = 0;
             vec_foreach(c, list->cmds_v) {
                 cmd = *c;
-                pid = tn_execute_cmd(cmd,args);
+                pid = tn_execute_cmd(root,cmd,args);
                 if(!cmd->is_daemon) {
                     waitpid(pid,&st,0);
                     if(WEXITSTATUS(st) != cmd->expected_status) {
@@ -761,6 +766,8 @@ int tn_execute_lists_sequential(tn_root *root, tn_args *args, int is_test_run)
                         list_failure = 1;
                         break;
                     }
+                } else {
+                    fprintf(root->pid_file, "%d\n", pid);
                 }
             }
             if(list->is_test) {
@@ -802,7 +809,9 @@ int tn_execute_lists_parallel(tn_root *root, tn_args *args, int is_test_run)
     while(proc_count || queue) {
         while(proc_count < cpu_count && queue) {
             ll_fpop(queue, cmd);
-            cmd->list->current_pid = tn_execute_cmd(cmd,args);
+            pid = tn_execute_cmd(root,cmd,args);
+            cmd->list->current_pid = pid;
+            fprintf(root->pid_file, "%d\n", pid);
             if (cmd->is_daemon) {
                 if(list->current_idx < vec_len(list->cmds_v)) {
                     ll_bpush(queue, list->cmds_v[list->current_idx]);
@@ -941,7 +950,7 @@ void cli_run(tn_args args)
 
 void cli_down(tn_args args)
 {
-    FILE *lockfile;
+    FILE *lockfile, *pid_file;
     char path_buf[512];
     assure_root_user();
     int len = snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s/hosts/", args.name);
@@ -966,9 +975,24 @@ void cli_down(tn_args args)
         }
         path_buf[len] = 0;
         rmdir(path_buf);
+
+        // read daemons.pid
+        snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s/daemons.pid", args.name);
+        pid_file = fopen(path_buf,"r+");
+        int count = 2, pid;
+        char _c;
+        while(count == 2) {
+            count = fscanf(pid_file, "%d%c", &pid, &_c);
+            kill(pid, SIGKILL);
+        }
+        
+        fclose(pid_file);
+        unlink(path_buf);
+
         snprintf(path_buf, sizeof(path_buf), NETNS_MOUNT_DIR "/%s/", args.name);
         rmdir(path_buf);
         tn_unlock(lockfile);
+
     } else {
         fprintf(stderr, "Simulation is not running\n");
         exit(1);
@@ -983,7 +1007,7 @@ void cli_up(tn_args args)
     tn_root *root;
     FILE *lockfile;
     int err, len, failure;
-    char buf[64];
+    char buf[512];
 
     root = tn_eval(args.path);
     if(root->has_error) {
@@ -1027,17 +1051,22 @@ void cli_up(tn_args args)
     vec_foreach(host, root->hosts_v) {
         tn_up_hosts(*host);
     }
+    // execute commands
+    snprintf(buf, sizeof(buf), NETNS_MOUNT_DIR "/%s/daemons.pid", root->name);
+    root->pid_file = fopen(buf, "w+");
     if(args.verbose) {
         failure = tn_execute_lists_sequential(root, &args, 0);
         if(args.operation == OP_TEST) {
-            failure = tn_execute_lists_sequential(root, &args, 1);
+            failure |= tn_execute_lists_sequential(root, &args, 1);
         }
     } else {
         failure = tn_execute_lists_parallel(root, &args, 0);
         if(args.operation == OP_TEST) {
-            failure = tn_execute_lists_parallel(root, &args, 1);
+            failure |= tn_execute_lists_parallel(root, &args, 1);
         }
     }
+    fclose(root->pid_file);
+
     tn_unlock(lockfile);
     nl_close(nlsock);
     nl_socket_free(nlsock);
