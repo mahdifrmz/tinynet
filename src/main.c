@@ -809,20 +809,21 @@ int tn_execute_lists_parallel(tn_root *root, tn_args *args, int is_test_run)
     while(proc_count || queue) {
         while(proc_count < cpu_count && queue) {
             ll_fpop(queue, cmd);
-            pid = tn_execute_cmd(root,cmd,args);
-            cmd->list->current_pid = pid;
+            pid = tn_execute_cmd(root,cmd,args);            
             fprintf(root->pid_file, "%d\n", pid);
             if (cmd->is_daemon) {
-                if(list->current_idx < vec_len(list->cmds_v)) {
-                    ll_bpush(queue, list->cmds_v[list->current_idx]);
-                    list->current_idx ++;
+                if(cmd->list->current_idx < vec_len(cmd->list->cmds_v)) {
+                    ll_bpush(queue, cmd->list->cmds_v[cmd->list->current_idx]);
+                    cmd->list->current_idx ++;
                 } else {
                     if (list->is_test) {
                         fprintf(stderr, "TinyNet: test '%s'" COLOR_GREEN " passed.\n" COLOR_RESET, list->name);
                     }
                 }
+                cmd->list->current_pid = -1;
             } else {
                 proc_count++;
+                cmd->list->current_pid = pid;
             }
         }
         if(!proc_count) {
@@ -832,6 +833,7 @@ int tn_execute_lists_parallel(tn_root *root, tn_args *args, int is_test_run)
         vec_foreach(c, cmdlists_v) {
             list = *c;
             if(list->current_pid == pid) {
+                list->current_pid = -1;
                 cmd = list->cmds_v[list->current_idx-1];
                 proc_count--;
                 if(WEXITSTATUS(st) != cmd->expected_status) {
