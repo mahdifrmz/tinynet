@@ -1,0 +1,37 @@
+host h1 {
+    iface eth1 {
+        peer h2/eth2
+        ip 10.0.1.1/24
+    }
+
+    cmd {
+        exec {
+            argv {
+                - ./httpd.py
+                - "8000"
+            }
+            + daemon
+        }
+        line "sleep 0.2"
+    }
+
+    test ping-h1 {
+        line "ping 10.0.1.1 -c 1 -w 2"
+        line "ping 10.0.1.2 -c 1 -w 2"
+    }
+}
+
+host h2 {
+    iface eth2 {
+        ip 10.0.1.2/24
+    }
+
+    test ping-h2 {
+        line "ping 10.0.1.2 -c 1 -w 2"
+        line "ping 10.0.1.1 -c 1 -w 2"
+    }
+
+    test http {
+        line "curl 10.0.1.1:8000"
+    }
+}
