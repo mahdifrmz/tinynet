@@ -6,6 +6,7 @@ add_executable(${PROJECT_NAME}
     src/crc32.c
     src/main.c
     src/parser.c
+    src/entity.c
     src/vm.c
 )
 
@@ -16,4 +17,11 @@ add_definitions(-Wall -Werror)
 target_include_directories(${PROJECT_NAME} PRIVATE toml)
 target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/libnl3)
 
-install(TARGETS tinynet)
+install(TARGETS tinynet)        
+
+add_custom_target(
+    test
+    COMMAND ./run-tests.sh $<TARGET_FILE:${PROJECT_NAME}>
+    DEPENDS ${PROJECT_NAME}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test    
+)

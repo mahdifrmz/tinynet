@@ -109,7 +109,7 @@ static void __##NAME##_descriptor_insert() {\
 }\
 tn_vm_entity_header *ENTITY_CREATOR(NAME)()\
 {\
-    tn_vm_entity_header *obj = malloc(sizeof(STRUCT));\
+    tn_vm_entity_header *obj = (tn_vm_entity_header *)malloc(sizeof(STRUCT));\
     obj->options = 0;\
     obj->flags = 0;\
     obj->name = NULL;\
